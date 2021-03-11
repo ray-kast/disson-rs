@@ -1,38 +1,52 @@
+use log::error;
 use nalgebra::{Matrix3, Vector2};
 use serde::Serialize;
 
 use super::algo::{OverlapCurve, PitchCurve};
-use crate::{cache::Cache, error::prelude::*};
-use crate::config::MapConfig;
+use crate::{
+    cache::{Cache, CacheExt},
+    config::MapConfig,
+    error::prelude::*,
+};
 
 #[derive(Debug, Clone, Copy, Serialize)]
-pub struct Config {
+pub(super) struct Config {
     res: Vector2<usize>,
     view: Matrix3<f64>,
 }
 
 impl Config {
     pub fn for_generate(cfg: MapConfig) -> (Self, ()) {
-        let MapConfig { width, height, pitch_curve, overlap_curve } = cfg;
+        let MapConfig {
+            width,
+            height,
+            pitch_curve,
+            overlap_curve,
+        } = cfg;
 
-        (Self {
-            res: Vector2::new(width, height),
-            view: Matrix3::identity(), // TODO
-        }, ())
+        (
+            Self {
+                res: Vector2::new(width, height),
+                view: Matrix3::identity(), // TODO
+            },
+            (),
+        )
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CacheKey {
     cfg: Config,
     pitch_curve: &'static str,
     overlap_curve: &'static str,
 }
 
-pub type DissonMap = Vec<f64>;
+pub(super) type DissonMap = Vec<f64>;
 
-pub fn compute<P: PitchCurve, O: OverlapCurve>(
-    cache: &dyn Cache<CacheKey, DissonMap>,
+pub type CacheValue = DissonMap;
+
+pub(super) fn compute<P: PitchCurve, O: OverlapCurve>(
+    cache: &dyn Cache,
     cfg: Config,
 ) -> Result<DissonMap> {
     let key = CacheKey {
@@ -41,15 +55,9 @@ pub fn compute<P: PitchCurve, O: OverlapCurve>(
         overlap_curve: O::ID,
     };
 
-    match cache.read_checked(&key, &|_, v| {
-        if v.len() != cfg.res.x * cfg.res.y {
-            return Err(anyhow!("size mismatch for cached map"));
-        }
-
-        Ok(())
-    }) {
+    match cache.read(&key) {
         Ok(r) => return Ok(r),
-        Err(e) => (), // TODO: log error?
+        Err(e) => error!("Failed to read from cache: {:?}", e),
     }
 
     let mut result = vec![0.0; cfg.res.x * cfg.res.y]; // TODO

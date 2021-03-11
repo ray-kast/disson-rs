@@ -6,10 +6,10 @@ use std::{
 };
 
 use bincode::Options;
-use serde::{Deserialize, Serialize};
+use log::{info, warn};
 use sha2::{Digest, Sha256};
 
-use super::Cache;
+use super::{Cache, CacheKey, CacheValue};
 use crate::error::prelude::*;
 
 const GLOBAL_MAGIC: &str = "\x00diss";
@@ -68,8 +68,8 @@ impl FileCache {
     }
 }
 
-impl<K: Serialize, V: Serialize + for<'de> Deserialize<'de>> Cache<K, V> for FileCache {
-    fn read_checked(&self, key: &K, check: &dyn Fn(&K, &V) -> Result<()>) -> Result<V> {
+impl Cache for FileCache {
+    fn read_impl(&self, key: &CacheKey) -> Result<CacheValue> {
         let cache_dir = self.locate_cache()?;
 
         let key_bytes = key_bin_opts()
@@ -111,12 +111,10 @@ impl<K: Serialize, V: Serialize + for<'de> Deserialize<'de>> Cache<K, V> for Fil
             .deserialize_from(file)
             .context("failed to read cache contents")?;
 
-        check(key, &val)?;
-
         Ok(val)
     }
 
-    fn write(&self, key: &K, val: &V) -> Result<()> {
+    fn write_impl(&self, key: &CacheKey, val: &CacheValue) -> Result<()> {
         let cache_dir = self.locate_cache()?;
 
         let key_bytes = key_bin_opts()
@@ -173,7 +171,7 @@ impl<K: Serialize, V: Serialize + for<'de> Deserialize<'de>> Cache<K, V> for Fil
         let cache_dir = self.locate_cache()?;
 
         if !cache_dir.exists() {
-            eprintln!("Cache directory doesn't exist, nothing to do.");
+            warn!("Cache directory doesn't exist, nothing to do.");
 
             return Ok(());
         }
@@ -223,7 +221,7 @@ impl<K: Serialize, V: Serialize + for<'de> Deserialize<'de>> Cache<K, V> for Fil
                     if magic_buf == GLOBAL_MAGIC.as_bytes() {
                         let s = path.to_string_lossy();
 
-                        eprintln!("Removing file {}...", s);
+                        info!("Removing file {}...", s);
 
                         fs::remove_file(&path)
                             .with_context(|| format!("failed to delete cache file {:?}", s))?;
@@ -236,7 +234,7 @@ impl<K: Serialize, V: Serialize + for<'de> Deserialize<'de>> Cache<K, V> for Fil
             if !any {
                 let s = dir.to_string_lossy();
 
-                eprintln!("Removing dir {}...", s);
+                info!("Removing dir {}...", s);
 
                 fs::remove_dir(&dir)
                     .with_context(|| format!("failed to delete empty directory {:?}", s))?;

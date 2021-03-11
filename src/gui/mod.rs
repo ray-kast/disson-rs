@@ -1,6 +1,6 @@
 use iced::{executor, Application, Command, Element, Settings};
 
-use crate::{cli::GlobalOpts, error::prelude::*};
+use crate::{cli::CacheMode, error::prelude::*};
 
 struct Gui;
 
@@ -21,7 +21,7 @@ impl Application for Gui {
     fn view(&mut self) -> Element<Message> { iced::Column::new().into() }
 }
 
-pub fn run(global: GlobalOpts) -> Result<()> {
+pub fn run(cache_mode: CacheMode) -> Result<()> {
     Gui::run(Settings {
         antialiasing: true,
         ..Settings::default()

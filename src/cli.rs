@@ -18,6 +18,25 @@ pub struct GlobalOpts {
     /// The cache directory to use, or "-" to disable caching
     #[structopt(name = "cache-dir", short, long, default_value = "")]
     pub cache_mode: CacheMode,
+
+    /// Only print warnings and errors to the console (enabled by default if no
+    /// console is attached)
+    #[structopt(short, long)]
+    pub quiet: bool,
+
+    /// Always print info messages, even if no console is detected
+    #[structopt(long, conflicts_with("quiet"))]
+    pub no_quiet: bool,
+
+    /// Output extra information to the console
+    #[structopt(
+        short,
+        long,
+        parse(from_occurrences),
+        conflicts_with("quiet"),
+        conflicts_with("no_quiet")
+    )]
+    pub verbose: usize,
 }
 
 #[derive(Debug, StructOpt)]

@@ -9,23 +9,48 @@ mod disson;
 mod error;
 mod gui;
 
-use cli::{Opts, Subcommand};
+use cli::{GlobalOpts, Opts, Subcommand};
+use log::{error, LevelFilter};
+
+const VERBOSITY: [LevelFilter; 3] = [LevelFilter::Info, LevelFilter::Debug, LevelFilter::Trace];
+#[cfg(debug_assertions)]
+const DEFAULT_V: usize = 1;
+#[cfg(not(debug_assertions))]
+const DEFAULT_V: usize = 0;
 
 fn main() {
     let Opts { opts: global, cmd } = cli::parse();
+    let GlobalOpts {
+        cache_mode,
+        quiet,
+        no_quiet,
+        verbose,
+    } = global;
+
+    {
+        let mut b = env_logger::builder();
+
+        if !(no_quiet || verbose != 0 || atty::is(atty::Stream::Stderr)) || quiet {
+            b.filter_level(LevelFilter::Warn);
+        } else {
+            b.filter_level(VERBOSITY[(DEFAULT_V + verbose).min(VERBOSITY.len() - 1)]);
+        }
+
+        b.init();
+    }
 
     let result = match cmd {
-        Subcommand::Clean => cache::clean(global),
-        Subcommand::Gui => gui::run(global),
-        Subcommand::Generate(g) => disson::generate(global, g),
+        Subcommand::Clean => cache::clean(cache_mode),
+        Subcommand::Gui => gui::run(cache_mode),
+        Subcommand::Generate(g) => disson::generate(cache_mode, g),
         Subcommand::PrintDefaults => config::print_defaults(),
-        Subcommand::Watch(g) => disson::watch(global, g),
+        Subcommand::Watch(g) => disson::watch(cache_mode, g),
     };
 
     match result {
         Ok(()) => (),
         Err(e) => {
-            eprintln!("ERROR: {:?}", e);
+            error!("Program exited with error: {:?}", e);
             std::process::exit(-1);
         },
     }

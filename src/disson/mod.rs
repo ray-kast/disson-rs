@@ -1,23 +1,20 @@
 mod algo;
-mod map;
+pub mod map;
 mod waves;
 
-use map::{CacheKey, DissonMap};
+use log::{info, warn};
 use notify::{event::ModifyKind, EventKind, RecursiveMode, Watcher};
 use tokio::{runtime, select, signal, sync::mpsc};
 
 use crate::{
     cache,
     cache::Cache,
-    cli::{GenerateOpts, GlobalOpts},
+    cli::{CacheMode, GenerateOpts},
     config::GenerateConfig,
     error::prelude::*,
 };
 
-fn generate_impl(
-    cache: impl AsRef<dyn Cache<CacheKey, DissonMap>>,
-    opts: &GenerateOpts,
-) -> Result<()> {
+fn generate_impl(cache: impl AsRef<dyn Cache>, opts: &GenerateOpts) -> Result<()> {
     let cfg = GenerateConfig::read(opts).context("failed to get config")?;
     let (map_cfg, fmt_opts) = map::Config::for_generate(cfg.map);
 
@@ -27,28 +24,24 @@ fn generate_impl(
     Ok(())
 }
 
-pub fn generate(global: GlobalOpts, opts: GenerateOpts) -> Result<()> {
-    let GlobalOpts { cache_mode } = global;
+pub fn generate(cache_mode: CacheMode, opts: GenerateOpts) -> Result<()> {
     let cache = cache::from_opts(cache_mode);
 
     generate_impl(cache, &opts)
 }
 
-pub fn watch(global: GlobalOpts, opts: GenerateOpts) -> Result<()> {
-    let GlobalOpts { cache_mode } = global;
+pub fn watch(cache_mode: CacheMode, opts: GenerateOpts) -> Result<()> {
     let cache = cache::from_opts(cache_mode);
 
-    // TODO: handle Ctrl+C
-
     if opts.config.exists() {
-        eprintln!("Running initial pass...");
+        info!("Running initial pass...");
 
         generate_impl(&cache, &opts)?;
     } else {
-        eprintln!("WARNING: config file doesn't exist yet, waiting for a new one...");
+        warn!("Config file doesn't exist yet, waiting for a new one...");
     }
 
-    eprintln!("Listening for changes...");
+    info!("Listening for changes...");
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -78,7 +71,7 @@ pub fn watch(global: GlobalOpts, opts: GenerateOpts) -> Result<()> {
                         eprint!("\r");
                     }
 
-                    eprintln!("^C received, stopping...");
+                    info!("^C received, stopping...");
 
                     None
                 }
@@ -86,7 +79,7 @@ pub fn watch(global: GlobalOpts, opts: GenerateOpts) -> Result<()> {
                 let evt = evt.context("filesystem watcher encountered an error")?;
 
                 if let EventKind::Modify(ModifyKind::Data(_)) = evt.kind {
-                    eprintln!("Config change detected; rerunning...");
+                    info!("Config change detected; rerunning...");
 
                     generate_impl(&cache, &opts)?;
                 }
