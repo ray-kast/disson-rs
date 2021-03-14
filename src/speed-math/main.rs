@@ -33,7 +33,7 @@ fn run_test(
     tries: usize,
     check: Option<fn(f64, f64) -> f64>,
     seed: <StdRng as SeedableRng>::Seed,
-    f: impl Fn(&[f64], &[f64], &mut [f64]),
+    f: impl Fn(&[(f64, f64)]) -> Vec<f64>,
 ) -> Vec<Duration> {
     let mut times = Vec::with_capacity(tries);
     let mut cerr = stderr();
@@ -43,24 +43,30 @@ fn run_test(
         write!(cerr, "\r\x1b[2K  Run {}...", run + 1).unwrap();
         cerr.flush().unwrap();
 
-        let mut a = vec![0_f64; len].into_boxed_slice();
-        let mut b = vec![0_f64; len].into_boxed_slice();
-        let mut out = vec![0_f64; len].into_boxed_slice();
+        let mut a = vec![0_f64; len];
+        let mut b = vec![0_f64; len];
 
         rng.fill(&mut *a);
         rng.fill(&mut *b);
 
-        assert_eq!(a.len(), out.len());
-        assert_eq!(b.len(), out.len());
+        assert_eq!(a.len(), b.len());
 
-        times.push(time! { f(black_box(&a), black_box(&b), black_box(&mut out)); });
+        let mut ab: Vec<(f64, f64)> = a.into_iter().zip(b.into_iter()).collect();
+        ab.shrink_to_fit();
+
+        let out;
+
+        times.push(time! { out = f(black_box(&ab)); });
+
+        assert_eq!(ab.len(), out.len());
 
         if let Some(check) = check {
             write!(cerr, " (checking)").unwrap();
             cerr.flush().unwrap();
 
             for (i, out) in out.iter().enumerate() {
-                assert_eq!(check(a[i], b[i]), *out, "mismatch at index {}", i);
+                let (a, b) = ab[i];
+                assert_eq!(check(a, b), *out, "mismatch at index {}", i);
             }
         }
     }
@@ -86,87 +92,121 @@ fn time_fmt(d: impl Borrow<Duration>) -> String {
     }
 }
 
-fn print_stats(samples: impl AsRef<[Duration]>) {
-    let samples: Vec<_> = samples.as_ref().iter().map(|d| d.as_secs_f64()).collect();
-    let avg = samples.iter().sum::<f64>() / samples.len() as f64;
-    let var = samples.iter().map(|x| (x - avg).powi(2)).sum::<f64>() / (samples.len() - 1) as f64;
+fn print_stats(
+    head: impl std::fmt::Display,
+    len: usize,
+    ty: FunctionEnum,
+    samples: impl AsRef<[Duration]>,
+) {
+    let samples = samples.as_ref();
+    let samples_sec: Vec<_> = samples.iter().map(|d| d.as_secs_f64()).collect();
+    let avg = samples_sec.iter().sum::<f64>() / samples_sec.len() as f64;
+    let var =
+        samples_sec.iter().map(|x| (x - avg).powi(2)).sum::<f64>() / (samples_sec.len() - 1) as f64;
 
-    println!("  Mean time: {}", time_fmt(Duration::from_secs_f64(avg)));
-    println!("  Variance: {}", time_fmt(Duration::from_secs_f64(var)));
+    eprintln!("  Mean time: {}", time_fmt(Duration::from_secs_f64(avg)));
+    eprintln!("  Variance: {}", time_fmt(Duration::from_secs_f64(var)));
+
+    let samples_nsec: Vec<_> = samples.iter().map(|d| d.as_nanos()).collect();
+    // samples_nsec.sort_unstable();
+
+    print!("{:?}", format!("{} ({} {:?})", head, len, ty));
+    for samp in samples_nsec {
+        print!(",{}", samp);
+    }
+    println!();
 }
 
 //// Functions to be benchmarked
 
-// Using inline(always) because in practice these will not be separate functions
-
-#[inline(always)]
 fn expon(a: f64, b: f64) -> f64 {
     let x = (b - a).abs();
     x * (1.0 - x).exp()
 }
 
-#[inline(always)]
 fn linear(a: f64, b: f64) -> f64 {
     let x = (b - a).abs();
     (3.0 * x).min(1.0) * (2.0 - x).max(0.0).min(1.0)
 }
 
-#[inline(always)]
 fn expon_tup((a, b): (f64, f64)) -> f64 { expon(a, b) }
 
-#[inline(always)]
 fn linear_tup((a, b): (f64, f64)) -> f64 { linear(a, b) }
 
-#[inline(always)]
 fn map_slice<
     'a,
-    F: FnOnce(
-        std::iter::Zip<
-            std::iter::Copied<std::slice::Iter<'a, f64>>,
-            std::iter::Copied<std::slice::Iter<'a, f64>>,
-        >,
-    ) -> J,
+    F: FnOnce(std::iter::Copied<std::slice::Iter<'a, (f64, f64)>>) -> J,
     J: IntoIterator<Item = f64> + 'a,
 >(
     f: F,
-    a: &'a [f64],
-    b: &'a [f64],
-    out: &mut [f64],
-) {
-    for (i, o) in f(a.iter().copied().zip(b.iter().copied()))
-        .into_iter()
-        .enumerate()
-    {
-        // TODO: check for excessive bounds-checking
-        out[i] = o;
-    }
+    ab: &'a [(f64, f64)],
+) -> Vec<f64> {
+    f(ab.iter().copied()).into_iter().collect()
 }
 
-#[inline(always)]
-fn eval_slice<F: Fn((f64, f64)) -> f64>(f: F, a: &[f64], b: &[f64], out: &mut [f64]) {
-    map_slice(move |i| i.map(f), a, b, out)
+fn eval_slice<F: Fn((f64, f64)) -> f64>(f: F, ab: &[(f64, f64)]) -> Vec<f64> {
+    map_slice(move |i| i.map(f), ab)
+}
+
+trait StaticFunction: Copy {
+    fn eval(self, a: f64, b: f64) -> f64;
+
+    fn map<I: IntoIterator<Item = (f64, f64)>>(
+        self,
+        it: I,
+    ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64>;
+
+    fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64>;
 }
 
 trait DynFunction {
     fn eval(&self, a: f64, b: f64) -> f64;
 
-    fn map(&self, a: &[f64], b: &[f64], out: &mut [f64]);
+    fn map_slice(&self, ab: &[(f64, f64)]) -> Vec<f64>;
 }
 
+#[derive(Debug, Clone, Copy)]
 struct Expon;
+
+impl StaticFunction for Expon {
+    fn eval(self, a: f64, b: f64) -> f64 { expon(a, b) }
+
+    fn map<I: IntoIterator<Item = (f64, f64)>>(
+        self,
+        it: I,
+    ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64> {
+        it.into_iter().map(expon_tup)
+    }
+
+    fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(expon_tup, ab) }
+}
 
 impl DynFunction for Expon {
     fn eval(&self, a: f64, b: f64) -> f64 { expon(a, b) }
 
-    fn map(&self, a: &[f64], b: &[f64], out: &mut [f64]) { eval_slice(expon_tup, a, b, out) }
+    fn map_slice(&self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(expon_tup, ab) }
 }
 
+#[derive(Debug, Clone, Copy)]
 struct Linear;
+
+impl StaticFunction for Linear {
+    fn eval(self, a: f64, b: f64) -> f64 { linear(a, b) }
+
+    fn map<I: IntoIterator<Item = (f64, f64)>>(
+        self,
+        it: I,
+    ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64> {
+        it.into_iter().map(linear_tup)
+    }
+
+    fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(linear_tup, ab) }
+}
 
 impl DynFunction for Linear {
     fn eval(&self, a: f64, b: f64) -> f64 { linear(a, b) }
 
-    fn map(&self, a: &[f64], b: &[f64], out: &mut [f64]) { eval_slice(linear_tup, a, b, out) }
+    fn map_slice(&self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(linear_tup, ab) }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,7 +222,9 @@ impl FunctionEnum {
             Self::Linear => Box::new(Linear),
         }
     }
+}
 
+impl StaticFunction for FunctionEnum {
     fn eval(self, a: f64, b: f64) -> f64 {
         match self {
             Self::Expon => expon(a, b),
@@ -200,16 +242,14 @@ impl FunctionEnum {
         })
     }
 
-    fn map_slice(self, a: &[f64], b: &[f64], out: &mut [f64]) {
+    fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> {
         eval_slice(
             match self {
                 Self::Expon => expon_tup,
                 Self::Linear => linear_tup,
             },
-            a,
-            b,
-            out,
-        );
+            ab,
+        )
     }
 }
 
@@ -218,15 +258,15 @@ impl FunctionEnum {
 fn main() {
     use std::array::IntoIter;
     const TRIES: usize = 1000;
-    const CHECK: bool = true;
+    const CHECK: bool = false;
 
     let mut seed = [0_u8; 32];
     StdRng::from_entropy().fill_bytes(&mut seed);
 
-    for len in IntoIter::new([10, 1_000, 100_000]) {
-        println!("//// LENGTH: {}", len);
+    for len in IntoIter::new([10, 1_000, 100_000, 1_000_000]) {
+        eprintln!("//// LENGTH: {}", len);
 
-        for ty in IntoIter::new([FunctionEnum::Expon, FunctionEnum::Linear]) {
+        for ty in IntoIter::new([FunctionEnum::Linear, FunctionEnum::Expon]) {
             let ty = black_box(ty);
 
             let check = if CHECK {
@@ -238,58 +278,82 @@ fn main() {
                 None
             };
 
-            println!("//// TYPE: {:?}", ty);
+            eprintln!("//// TYPE: {:?}", ty);
 
             {
-                println!("Running baseline...");
+                eprintln!("Running baseline (iterator version)...");
                 let times_base = match ty {
-                    FunctionEnum::Expon => run_test(len, TRIES, check, seed, |a, b, o| {
-                        eval_slice(expon_tup, a, b, o)
+                    FunctionEnum::Expon => run_test(len, TRIES, check, seed, |ab| {
+                        ab.iter().copied().map(expon_tup).collect()
                     }),
-                    FunctionEnum::Linear => run_test(len, TRIES, check, seed, |a, b, o| {
-                        eval_slice(linear_tup, a, b, o)
+                    FunctionEnum::Linear => run_test(len, TRIES, check, seed, |ab| {
+                        ab.iter().copied().map(linear_tup).collect()
                     }),
                 };
-                print_stats(times_base);
+                print_stats("Baseline (iter)", len, ty, times_base);
             }
 
             {
-                println!("Running non-batched enum...");
-                let times_enum_eval = run_test(len, TRIES, check, seed, |a, b, o| {
-                    eval_slice(|(a, b)| ty.eval(a, b), a, b, o)
+                eprintln!("Running baseline (slice version)...");
+                let times_base = match ty {
+                    FunctionEnum::Expon => {
+                        run_test(len, TRIES, check, seed, |ab| eval_slice(expon_tup, ab))
+                    },
+                    FunctionEnum::Linear => {
+                        run_test(len, TRIES, check, seed, |ab| eval_slice(linear_tup, ab))
+                    },
+                };
+                print_stats("Baseline (slice)", len, ty, times_base);
+            }
+
+            {
+                eprintln!("Running batched static...");
+                let times_static = match ty {
+                    FunctionEnum::Expon => {
+                        run_test(len, TRIES, check, seed, |ab| Expon.map_slice(ab))
+                    },
+                    FunctionEnum::Linear => {
+                        run_test(len, TRIES, check, seed, |ab| Linear.map_slice(ab))
+                    },
+                };
+                print_stats("Static", len, ty, times_static);
+            }
+
+            {
+                eprintln!("Running non-batched enum...");
+                let times_enum_eval = run_test(len, TRIES, check, seed, |ab| {
+                    eval_slice(|(a, b)| ty.eval(a, b), ab)
                 });
-                print_stats(times_enum_eval);
+                print_stats("Enum (single)", len, ty, times_enum_eval);
             }
 
             {
-                println!("Running batched enum (iterator version)...");
-                let times_enum_map = run_test(len, TRIES, check, seed, |a, b, o| {
-                    map_slice(|i| ty.map(i), a, b, o)
-                });
-                print_stats(times_enum_map);
+                eprintln!("Running batched enum (iterator version)...");
+                let times_enum_map =
+                    run_test(len, TRIES, check, seed, |ab| map_slice(|i| ty.map(i), ab));
+                print_stats("Enum (iter)", len, ty, times_enum_map);
             }
 
             {
-                println!("Running batched enum (slice version)...");
-                let times_enum_map_slice =
-                    run_test(len, TRIES, check, seed, |a, b, o| ty.map_slice(a, b, o));
-                print_stats(times_enum_map_slice);
+                eprintln!("Running batched enum (slice version)...");
+                let times_enum_map_slice = run_test(len, TRIES, check, seed, |ab| ty.map_slice(ab));
+                print_stats("Enum (slice)", len, ty, times_enum_map_slice);
             }
 
             {
-                println!("Running non-batched dyn...");
+                eprintln!("Running non-batched dyn...");
                 let dy = ty.into_dyn();
-                let times_dyn_eval = run_test(len, TRIES, check, seed, |a, b, o| {
-                    eval_slice(|(a, b)| dy.eval(a, b), a, b, o)
+                let times_dyn_eval = run_test(len, TRIES, check, seed, |ab| {
+                    eval_slice(|(a, b)| dy.eval(a, b), ab)
                 });
-                print_stats(times_dyn_eval);
+                print_stats("Dyn (single)", len, ty, times_dyn_eval);
             }
 
             {
-                println!("Running batched dyn...");
+                eprintln!("Running batched dyn...");
                 let dy = ty.into_dyn();
-                let times_dyn_map = run_test(len, TRIES, check, seed, |a, b, o| dy.map(a, b, o));
-                print_stats(times_dyn_map);
+                let times_dyn_map = run_test(len, TRIES, check, seed, |ab| dy.map_slice(ab));
+                print_stats("Dyn (slice)", len, ty, times_dyn_map);
             }
         }
     }
