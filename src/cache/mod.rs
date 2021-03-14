@@ -1,5 +1,10 @@
 pub mod file;
-use std::{borrow::Cow, convert::TryFrom, error::Error as StdError};
+use std::{
+    borrow::Cow,
+    convert::{TryFrom, TryInto},
+    error::Error as StdError,
+    ops::{Deref, DerefMut},
+};
 
 use file::FileCache;
 use serde::{Deserialize, Serialize};
@@ -10,6 +15,10 @@ use crate::{
     disson::map,
     error::prelude::*,
 };
+
+pub mod prelude {
+    pub use super::{Cache, CacheEntry, CacheEntryExt, CacheExt};
+}
 
 #[derive(Debug, Error)]
 #[error("failed to unwrap cache {0}, expected {1}")]
@@ -36,7 +45,7 @@ macro_rules! cache_enum {
             { $($($rest)*)? }
             {
                 $($out)*
-                $name(&'a $ty),
+                $name($ty),
             }
             {
                 $($impls)*
@@ -66,8 +75,8 @@ macro_rules! cache_enum {
     };
 
     (@process_body Key {} { $($body:tt)* } { $($impls:item)* }) => {
-        #[derive(Debug, Serialize)]
-        pub enum CacheKey<'a> { $($body)* }
+        #[derive(Debug, Clone, Serialize)]
+        pub enum CacheKey { $($body)* }
 
         $($impls)*
     };
@@ -80,8 +89,8 @@ macro_rules! cache_enum {
     };
 
     (@from_impl Key $var:ident $ty:ty) => {
-        impl<'__a> ::std::convert::From<&'__a $ty> for CacheKey<'__a> {
-            fn from(__v: &'__a $ty) -> Self { Self::$var(__v) }
+        impl<'__a> ::std::convert::From<$ty> for CacheKey {
+            fn from(__v: $ty) -> Self { Self::$var(__v) }
         }
     };
 
@@ -104,7 +113,7 @@ macro_rules! cache_enum {
 
     (@try_into_impl Key $var:ident $ty:ty) => {
         cache_enum! {
-            @try_into_impl_item '__a (CacheKey<'__a> => &'__a $ty)
+            @try_into_impl_item (CacheKey => $ty)
             |__v| match __v {
                 CacheKey::$var(__v) => Ok(__v),
                 #[allow(unreachable_patterns)]
@@ -161,73 +170,117 @@ cache_enum! {
     }
 }
 
-pub trait Cache {
-    fn read_impl(&self, key: &CacheKey) -> Result<CacheValue>;
+pub trait Cache<'a>: Send + Sync {
+    type Entry: CacheEntry + 'a;
 
-    fn write_impl(&self, key: &CacheKey, val: &CacheValue) -> Result<()>;
+    fn entry_impl(&'a self, key: CacheKey) -> Result<Self::Entry>;
 
     fn clean(&self) -> Result<()>;
 }
 
-pub trait CacheExt {
-    fn read<
-        'a,
-        K: 'a,
-        V: for<'b> TryFrom<CacheValue<'b>, Error = E>,
-        E: 'static + StdError + Send + Sync,
-    >(
-        &self,
-        key: K,
-    ) -> Result<V>
-    where
-        CacheKey<'a>: From<K>;
+impl<'a, T: Cache<'a> + ?Sized + 'a, U: Deref<Target = T> + Send + Sync> Cache<'a> for U {
+    type Entry = T::Entry;
 
-    fn write<'a, K: 'a, V: 'a>(&self, key: K, val: V) -> Result<()>
-    where
-        CacheKey<'a>: From<K>,
-        CacheValue<'a>: From<V>;
-}
-
-impl<T: Cache + ?Sized> CacheExt for T {
-    fn read<
-        'a,
-        K: 'a,
-        V: for<'b> TryFrom<CacheValue<'b>, Error = E>,
-        E: 'static + StdError + Send + Sync,
-    >(
-        &self,
-        key: K,
-    ) -> Result<V>
-    where
-        CacheKey<'a>: From<K>,
-    {
-        V::try_from(self.read_impl(&key.into())?).context("failed to unpack cache value")
+    fn entry_impl(&'a self, key: CacheKey) -> Result<Self::Entry> {
+        (<Self as Deref>::deref(self) as &T).entry_impl(key)
     }
 
-    fn write<'a, K: 'a, V: 'a>(&self, key: K, val: V) -> Result<()>
-    where
-        CacheKey<'a>: From<K>,
-        CacheValue<'a>: From<V>,
-    {
-        self.write_impl(&key.into(), &val.into())
+    fn clean(&self) -> Result<()> { (<Self as Deref>::deref(self) as &T).clean() }
+}
+
+pub trait CacheEntry {
+    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>>;
+
+    fn write_impl(&mut self, val: &CacheValue) -> Result<()>;
+}
+
+impl<T: CacheEntry + ?Sized, U: Deref<Target = T> + DerefMut> CacheEntry for U {
+    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> {
+        (<Self as DerefMut>::deref_mut(self) as &mut T).read_impl()
+    }
+
+    fn write_impl(&mut self, val: &CacheValue) -> Result<()> {
+        (<Self as DerefMut>::deref_mut(self) as &mut T).write_impl(val)
+    }
+}
+
+pub trait CacheExt<'a>: Cache<'a> {
+    fn entry<K: 'a + Into<CacheKey>>(&'a self, key: K) -> Result<Self::Entry>;
+}
+
+impl<'a, T: Cache<'a> + ?Sized> CacheExt<'a> for T {
+    fn entry<K: 'a + Into<CacheKey>>(&'a self, key: K) -> Result<Self::Entry> {
+        self.entry_impl(key.into())
+    }
+}
+
+pub trait CacheEntryExt<'a>: CacheEntry {
+    fn read<V: for<'v> TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
+        &'a mut self,
+    ) -> Result<Vec<V>>;
+
+    fn write<'v, V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
+}
+
+impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
+    fn read<V: for<'v> TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
+        &'a mut self,
+    ) -> Result<Vec<V>> {
+        self.read_impl().and_then(|v| {
+            v.into_iter()
+                .map(|v| v.try_into().context("failed to unpack cache value"))
+                .collect()
+        })
+    }
+
+    fn write<'v, V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
+        self.write_impl(&val.into())
     }
 }
 
 pub struct NullCache;
 
-// TODO: remove type parameters in favor of enums
-impl Cache for NullCache {
-    fn read_impl(&self, _: &CacheKey) -> Result<CacheValue> { Err(anyhow!("caching is disabled")) }
+impl<'a> Cache<'a> for NullCache {
+    type Entry = NullCache;
 
-    fn write_impl(&self, _: &CacheKey, _: &CacheValue) -> Result<()> { Ok(()) }
+    fn entry_impl(&'a self, _: CacheKey) -> Result<Self::Entry> { Ok(Self) }
 
     fn clean(&self) -> Result<()> { Ok(()) }
 }
 
-pub fn from_opts(mode: CacheMode) -> Box<dyn Cache> {
+impl CacheEntry for NullCache {
+    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> { Ok(vec![]) }
+
+    fn write_impl(&mut self, _: &CacheValue) -> Result<()> { Ok(()) }
+}
+
+pub enum DynamicCache {
+    File(FileCache),
+    Null(NullCache),
+}
+
+impl<'a> Cache<'a> for DynamicCache {
+    type Entry = Box<dyn CacheEntry + 'a>;
+
+    fn entry_impl(&'a self, key: CacheKey) -> Result<Self::Entry> {
+        Ok(match self {
+            Self::File(f) => Box::new(f.entry(key)?),
+            Self::Null(n) => Box::new(n.entry(key)?),
+        })
+    }
+
+    fn clean(&self) -> Result<()> {
+        match self {
+            Self::File(f) => f.clean(),
+            Self::Null(n) => n.clean(),
+        }
+    }
+}
+
+pub fn from_opts(mode: CacheMode) -> DynamicCache {
     match mode {
-        CacheMode::Off => Box::new(NullCache),
-        CacheMode::File(d) => Box::new(FileCache(d)),
+        CacheMode::Off => DynamicCache::Null(NullCache),
+        CacheMode::File(d) => DynamicCache::File(FileCache(d)),
     }
 }
 

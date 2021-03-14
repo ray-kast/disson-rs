@@ -109,9 +109,9 @@ pub enum Output {
 
 #[derive(Debug)]
 pub enum SizeOverride {
-    Width(usize),
-    Height(usize),
-    Exact(usize, usize),
+    Width(u32),
+    Height(u32),
+    Exact(u32, u32),
     Percent(f64),
 }
 

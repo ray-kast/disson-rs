@@ -667,6 +667,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
 
 [[package]]
+name = "dispose"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f5768b0417ea96fcf5716658eaeefc7069aceafc7180103f48fcaf86327193a"
+dependencies = [
+ "dispose-derive",
+]
+
+[[package]]
+name = "dispose-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94c0f54416b909577a83a68593e6fe25ebb7cd39ef7cbda37cc751c474a03eba"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "disson"
 version = "0.1.0"
 dependencies = [
@@ -675,6 +696,7 @@ dependencies = [
  "bincode",
  "csv",
  "dirs 3.0.1",
+ "dispose",
  "env_logger",
  "iced",
  "image",
