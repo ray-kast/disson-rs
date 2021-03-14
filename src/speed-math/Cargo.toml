@@ -3,6 +3,7 @@ name = "speed-math"
 version = "0.0.0"
 authors = ["rookie1024 <rookie1286@gmail.com>"]
 edition = "2018"
+license = "AGPL-3.0-or-later"
 
 [[bin]]
 name = "speed-math"
