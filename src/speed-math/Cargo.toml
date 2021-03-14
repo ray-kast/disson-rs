@@ -1,0 +1,12 @@
+[package]
+name = "speed-math"
+version = "0.0.0"
+authors = ["rookie1024 <rookie1286@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "speed-math"
+path = "main.rs"
+
+[dependencies]
+rand = "0.8.3"
