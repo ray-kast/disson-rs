@@ -222,6 +222,13 @@ impl FunctionEnum {
             Self::Linear => Box::new(Linear),
         }
     }
+
+    fn fun(self) -> fn((f64, f64)) -> f64 {
+        match self {
+            Self::Expon => expon_tup,
+            Self::Linear => linear_tup,
+        }
+    }
 }
 
 impl StaticFunction for FunctionEnum {
@@ -236,20 +243,13 @@ impl StaticFunction for FunctionEnum {
         self,
         it: I,
     ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64> {
-        it.into_iter().map(match self {
-            Self::Expon => expon_tup,
-            Self::Linear => linear_tup,
-        })
+        let fun = self.fun();
+        it.into_iter().map(fun)
     }
 
     fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> {
-        eval_slice(
-            match self {
-                Self::Expon => expon_tup,
-                Self::Linear => linear_tup,
-            },
-            ab,
-        )
+        let fun = self.fun();
+        eval_slice(fun, ab)
     }
 }
 
