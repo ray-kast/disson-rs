@@ -6,7 +6,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use file::FileCache;
+use file::{FileCache, FileCacheEntry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -219,7 +219,7 @@ pub trait CacheEntryExt<'a>: CacheEntry {
         &'a mut self,
     ) -> Result<Vec<V>>;
 
-    fn write<'v, V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
+    fn write<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
 }
 
 impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
@@ -233,7 +233,7 @@ impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
         })
     }
 
-    fn write<'v, V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
+    fn write<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
         self.write_impl(&val.into())
     }
 }
@@ -259,13 +259,18 @@ pub enum DynamicCache {
     Null(NullCache),
 }
 
+pub enum DynamicCacheEntry<'a> {
+    File(FileCacheEntry<'a>),
+    Null(NullCache),
+}
+
 impl<'a> Cache<'a> for DynamicCache {
-    type Entry = Box<dyn CacheEntry + 'a>;
+    type Entry = DynamicCacheEntry<'a>;
 
     fn entry_impl(&'a self, key: CacheKey) -> Result<Self::Entry> {
         Ok(match self {
-            Self::File(f) => Box::new(f.entry(key)?),
-            Self::Null(n) => Box::new(n.entry(key)?),
+            Self::File(f) => Self::Entry::File(f.entry(key)?),
+            Self::Null(n) => Self::Entry::Null(n.entry(key)?),
         })
     }
 
@@ -273,6 +278,22 @@ impl<'a> Cache<'a> for DynamicCache {
         match self {
             Self::File(f) => f.clean(),
             Self::Null(n) => n.clean(),
+        }
+    }
+}
+
+impl<'a> CacheEntry for DynamicCacheEntry<'a> {
+    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> {
+        match self {
+            Self::File(f) => f.read_impl(),
+            Self::Null(n) => n.read_impl(),
+        }
+    }
+
+    fn write_impl(&mut self, val: &CacheValue) -> Result<()> {
+        match self {
+            Self::File(f) => f.write_impl(val),
+            Self::Null(n) => n.write_impl(val),
         }
     }
 }
