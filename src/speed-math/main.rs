@@ -13,22 +13,66 @@ use rand::{prelude::*, rngs::StdRng};
 //// Test harness functions and plumbing code
 
 macro_rules! time {
-    ($($expr:expr);+) => {
+    ($($stmt:stmt);+) => {
         {
             let __start = Instant::now();
-            let __ret = { $($expr)* };
+            let __ret = { $($stmt)+ };
             let __end = Instant::now();
 
             (__ret, __end - __start)
         }
     };
 
-    ($($expr:expr);+;) => { time! { $($expr)* }.1 };
+    ($($stmt:stmt;)+) => { time! { $($stmt);+ }.1 };
 
     () => { time! { (); } };
 }
 
-fn run_test(
+fn run_test_iter<F: StaticFunction>(
+    len: usize,
+    tries: usize,
+    check: Option<fn(f64, f64) -> f64>,
+    seed: <StdRng as SeedableRng>::Seed,
+    f: F,
+) -> Vec<Duration> {
+    let mut times = Vec::with_capacity(tries);
+    let mut cerr = stderr();
+    let mut rng = StdRng::from_seed(seed);
+
+    for run in 0..tries {
+        write!(cerr, "\r\x1b[2K  Run {}...", run + 1).unwrap();
+        cerr.flush().unwrap();
+
+        let mut a = vec![0_f64; len];
+        let mut b = vec![0_f64; len];
+
+        rng.fill(&mut *a);
+        rng.fill(&mut *b);
+
+        assert_eq!(a.len(), b.len());
+
+        let out;
+
+        times.push(time! { out = f.collect(a.iter().cloned().zip(b.iter().copied())); });
+
+        assert_eq!(a.len(), out.len());
+
+        if let Some(check) = check {
+            write!(cerr, " (checking)").unwrap();
+            cerr.flush().unwrap();
+
+            for (i, out) in out.iter().enumerate() {
+                assert_eq!(check(a[i], b[i]), *out, "mismatch at index {}", i);
+            }
+        }
+    }
+
+    writeln!(cerr).unwrap();
+
+    times
+}
+
+fn run_test_slice(
     len: usize,
     tries: usize,
     check: Option<fn(f64, f64) -> f64>,
@@ -51,12 +95,13 @@ fn run_test(
 
         assert_eq!(a.len(), b.len());
 
-        let mut ab: Vec<(f64, f64)> = a.into_iter().zip(b.into_iter()).collect();
-        ab.shrink_to_fit();
-
+        let ab: Vec<(f64, f64)>;
         let out;
 
-        times.push(time! { out = f(black_box(&ab)); });
+        times.push(time! {
+            ab = a.into_iter().zip(b.into_iter()).collect();
+            out = f(black_box(&ab));
+        });
 
         assert_eq!(ab.len(), out.len());
 
@@ -157,6 +202,8 @@ trait StaticFunction: Copy {
     ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64>;
 
     fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64>;
+
+    fn collect<I: IntoIterator<Item = (f64, f64)>>(self, it: I) -> Vec<f64>;
 }
 
 trait DynFunction {
@@ -179,6 +226,10 @@ impl StaticFunction for Expon {
     }
 
     fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(expon_tup, ab) }
+
+    fn collect<I: IntoIterator<Item = (f64, f64)>>(self, it: I) -> Vec<f64> {
+        self.map(it).collect()
+    }
 }
 
 impl DynFunction for Expon {
@@ -201,6 +252,10 @@ impl StaticFunction for Linear {
     }
 
     fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> { eval_slice(linear_tup, ab) }
+
+    fn collect<I: IntoIterator<Item = (f64, f64)>>(self, it: I) -> Vec<f64> {
+        self.map(it).collect()
+    }
 }
 
 impl DynFunction for Linear {
@@ -222,13 +277,6 @@ impl FunctionEnum {
             Self::Linear => Box::new(Linear),
         }
     }
-
-    fn fun(self) -> fn((f64, f64)) -> f64 {
-        match self {
-            Self::Expon => expon_tup,
-            Self::Linear => linear_tup,
-        }
-    }
 }
 
 impl StaticFunction for FunctionEnum {
@@ -243,18 +291,30 @@ impl StaticFunction for FunctionEnum {
         self,
         it: I,
     ) -> std::iter::Map<I::IntoIter, fn((f64, f64)) -> f64> {
-        let fun = self.fun();
-        it.into_iter().map(fun)
+        match self {
+            Self::Expon => Expon.map(it),
+            Self::Linear => Linear.map(it),
+        }
     }
 
     fn map_slice(self, ab: &[(f64, f64)]) -> Vec<f64> {
-        let fun = self.fun();
-        eval_slice(fun, ab)
+        match self {
+            Self::Expon => Expon.map_slice(ab),
+            Self::Linear => Linear.map_slice(ab),
+        }
+    }
+
+    fn collect<I: IntoIterator<Item = (f64, f64)>>(self, it: I) -> Vec<f64> {
+        match self {
+            Self::Expon => Expon.collect(it),
+            Self::Linear => Linear.collect(it),
+        }
     }
 }
 
 //// Test suite
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     use std::array::IntoIter;
     const TRIES: usize = 1000;
@@ -283,10 +343,10 @@ fn main() {
             {
                 eprintln!("Running baseline (iterator version)...");
                 let times_base = match ty {
-                    FunctionEnum::Expon => run_test(len, TRIES, check, seed, |ab| {
+                    FunctionEnum::Expon => run_test_slice(len, TRIES, check, seed, |ab| {
                         ab.iter().copied().map(expon_tup).collect()
                     }),
-                    FunctionEnum::Linear => run_test(len, TRIES, check, seed, |ab| {
+                    FunctionEnum::Linear => run_test_slice(len, TRIES, check, seed, |ab| {
                         ab.iter().copied().map(linear_tup).collect()
                     }),
                 };
@@ -297,31 +357,40 @@ fn main() {
                 eprintln!("Running baseline (slice version)...");
                 let times_base = match ty {
                     FunctionEnum::Expon => {
-                        run_test(len, TRIES, check, seed, |ab| eval_slice(expon_tup, ab))
+                        run_test_slice(len, TRIES, check, seed, |ab| eval_slice(expon_tup, ab))
                     },
                     FunctionEnum::Linear => {
-                        run_test(len, TRIES, check, seed, |ab| eval_slice(linear_tup, ab))
+                        run_test_slice(len, TRIES, check, seed, |ab| eval_slice(linear_tup, ab))
                     },
                 };
                 print_stats("Baseline (slice)", len, ty, times_base);
             }
 
             {
-                eprintln!("Running batched static...");
+                eprintln!("Running batched static (slice version)...");
                 let times_static = match ty {
                     FunctionEnum::Expon => {
-                        run_test(len, TRIES, check, seed, |ab| Expon.map_slice(ab))
+                        run_test_slice(len, TRIES, check, seed, |ab| Expon.map_slice(ab))
                     },
                     FunctionEnum::Linear => {
-                        run_test(len, TRIES, check, seed, |ab| Linear.map_slice(ab))
+                        run_test_slice(len, TRIES, check, seed, |ab| Linear.map_slice(ab))
                     },
                 };
-                print_stats("Static", len, ty, times_static);
+                print_stats("Static (single)", len, ty, times_static);
+            }
+
+            {
+                eprintln!("Running batched static (collecting version)...");
+                let times_enum_collect = match ty {
+                    FunctionEnum::Expon => run_test_iter(len, TRIES, check, seed, Expon),
+                    FunctionEnum::Linear => run_test_iter(len, TRIES, check, seed, Linear),
+                };
+                print_stats("Static (collect)", len, ty, times_enum_collect);
             }
 
             {
                 eprintln!("Running non-batched enum...");
-                let times_enum_eval = run_test(len, TRIES, check, seed, |ab| {
+                let times_enum_eval = run_test_slice(len, TRIES, check, seed, |ab| {
                     eval_slice(|(a, b)| ty.eval(a, b), ab)
                 });
                 print_stats("Enum (single)", len, ty, times_enum_eval);
@@ -330,20 +399,27 @@ fn main() {
             {
                 eprintln!("Running batched enum (iterator version)...");
                 let times_enum_map =
-                    run_test(len, TRIES, check, seed, |ab| map_slice(|i| ty.map(i), ab));
+                    run_test_slice(len, TRIES, check, seed, |ab| map_slice(|i| ty.map(i), ab));
                 print_stats("Enum (iter)", len, ty, times_enum_map);
             }
 
             {
                 eprintln!("Running batched enum (slice version)...");
-                let times_enum_map_slice = run_test(len, TRIES, check, seed, |ab| ty.map_slice(ab));
+                let times_enum_map_slice =
+                    run_test_slice(len, TRIES, check, seed, |ab| ty.map_slice(ab));
                 print_stats("Enum (slice)", len, ty, times_enum_map_slice);
+            }
+
+            {
+                eprintln!("Running batched enum (collecting version)...");
+                let times_enum_collect = run_test_iter(len, TRIES, check, seed, ty);
+                print_stats("Enum (collect)", len, ty, times_enum_collect);
             }
 
             {
                 eprintln!("Running non-batched dyn...");
                 let dy = ty.into_dyn();
-                let times_dyn_eval = run_test(len, TRIES, check, seed, |ab| {
+                let times_dyn_eval = run_test_slice(len, TRIES, check, seed, |ab| {
                     eval_slice(|(a, b)| dy.eval(a, b), ab)
                 });
                 print_stats("Dyn (single)", len, ty, times_dyn_eval);
@@ -352,7 +428,7 @@ fn main() {
             {
                 eprintln!("Running batched dyn...");
                 let dy = ty.into_dyn();
-                let times_dyn_map = run_test(len, TRIES, check, seed, |ab| dy.map_slice(ab));
+                let times_dyn_map = run_test_slice(len, TRIES, check, seed, |ab| dy.map_slice(ab));
                 print_stats("Dyn (slice)", len, ty, times_dyn_map);
             }
         }
