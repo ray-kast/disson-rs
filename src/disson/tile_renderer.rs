@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    mem,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -10,16 +9,21 @@ use nalgebra::Vector2;
 use rayon::prelude::*;
 
 mod backbuf {
-    use std::{ptr, ptr::NonNull, slice, sync::RwLock};
+    use std::{mem, ptr, ptr::NonNull, slice, sync::RwLock};
 
     use dispose::{Disposable, Dispose};
+    use nalgebra::Vector2;
 
-    use super::*;
+    use super::TileRange;
 
-    struct Inner<T: Sync>(Vector2<usize>, RwLock<NonNull<T>>);
+    struct Slice<T: Sync>(NonNull<T>);
+    struct Inner<T: Sync>(Vector2<usize>, RwLock<Slice<T>>);
     pub(super) struct BackBuffer<T: Sync>(Disposable<Inner<T>>);
 
-    unsafe impl<T: Sync> Sync for BackBuffer<T> {}
+    // Isolate the unsafe threading markers to get stronger static guarantees
+    // from RwLock
+    unsafe impl<T: Sync> Send for Slice<T> {}
+    unsafe impl<T: Sync> Sync for Slice<T> {}
 
     impl<T: Default + Copy + Sync> BackBuffer<T> {
         pub fn new(size: Vector2<u32>) -> Self {
@@ -27,13 +31,13 @@ mod backbuf {
             // TODO: eventually box literals will be a thing, I think...
             Self(Disposable::new(Inner(
                 size,
-                RwLock::new(
+                RwLock::new(Slice(
                     NonNull::new(
                         Box::leak(vec![Default::default(); size.x * size.y].into_boxed_slice())
                             .as_mut_ptr(),
                     )
                     .expect("back buffer slice was null"),
-                ),
+                )),
             )))
         }
 
@@ -59,7 +63,7 @@ mod backbuf {
             for r in 0..size.y {
                 let tile_i = r * size.x;
                 let buf_i = buf_r + pos.x;
-                slice::from_raw_parts_mut(buf.as_ptr().add(buf_i), size.x)
+                slice::from_raw_parts_mut(buf.0.as_ptr().add(buf_i), size.x)
                     .copy_from_slice(tile.get_unchecked(tile_i..tile_i + size.x));
 
                 buf_r += this.0.x;
@@ -74,6 +78,7 @@ mod backbuf {
                     self.1
                         .into_inner()
                         .expect("back buffer was poisoned")
+                        .0
                         .as_ptr(),
                     self.0.x * self.0.y,
                 ))
