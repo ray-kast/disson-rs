@@ -10,11 +10,7 @@ use file::{FileCache, FileCacheEntry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    cli::{CacheMode, GlobalOpts},
-    disson::map,
-    error::prelude::*,
-};
+use crate::{cli::CacheMode, disson::map, error::prelude::*};
 
 pub mod prelude {
     pub use super::{Cache, CacheEntry, CacheEntryExt, CacheExt};
@@ -189,18 +185,25 @@ impl<'a, T: Cache<'a> + ?Sized + 'a, U: Deref<Target = T> + Send + Sync> Cache<'
 }
 
 pub trait CacheEntry {
-    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>>;
+    fn read_impl(&mut self) -> Vec<CacheValue<'static>>;
 
-    fn write_impl(&mut self, val: &CacheValue) -> Result<()>;
+    fn append_impl(&mut self, val: &CacheValue) -> Result<()>;
+
+    /// Drop all values from this cache entry
+    fn truncate(&mut self) -> Result<()>;
 }
 
 impl<T: CacheEntry + ?Sized, U: Deref<Target = T> + DerefMut> CacheEntry for U {
-    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> {
+    fn read_impl(&mut self) -> Vec<CacheValue<'static>> {
         (<Self as DerefMut>::deref_mut(self) as &mut T).read_impl()
     }
 
-    fn write_impl(&mut self, val: &CacheValue) -> Result<()> {
-        (<Self as DerefMut>::deref_mut(self) as &mut T).write_impl(val)
+    fn append_impl(&mut self, val: &CacheValue) -> Result<()> {
+        (<Self as DerefMut>::deref_mut(self) as &mut T).append_impl(val)
+    }
+
+    fn truncate(&mut self) -> Result<()> {
+        (<Self as DerefMut>::deref_mut(self) as &mut T).truncate()
     }
 }
 
@@ -219,22 +222,21 @@ pub trait CacheEntryExt<'a>: CacheEntry {
         &'a mut self,
     ) -> Result<Vec<V>>;
 
-    fn write<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
+    fn append<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
 }
 
 impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
     fn read<V: for<'v> TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
         &'a mut self,
     ) -> Result<Vec<V>> {
-        self.read_impl().and_then(|v| {
-            v.into_iter()
-                .map(|v| v.try_into().context("failed to unpack cache value"))
-                .collect()
-        })
+        self.read_impl()
+            .into_iter()
+            .map(|v| v.try_into().context("failed to unpack cache value"))
+            .collect()
     }
 
-    fn write<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
-        self.write_impl(&val.into())
+    fn append<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
+        self.append_impl(&val.into())
     }
 }
 
@@ -249,9 +251,11 @@ impl<'a> Cache<'a> for NullCache {
 }
 
 impl CacheEntry for NullCache {
-    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> { Ok(vec![]) }
+    fn read_impl(&mut self) -> Vec<CacheValue<'static>> { vec![] }
 
-    fn write_impl(&mut self, _: &CacheValue) -> Result<()> { Ok(()) }
+    fn append_impl(&mut self, _: &CacheValue) -> Result<()> { Ok(()) }
+
+    fn truncate(&mut self) -> Result<()> { Ok(()) }
 }
 
 pub enum DynamicCache {
@@ -283,17 +287,24 @@ impl<'a> Cache<'a> for DynamicCache {
 }
 
 impl<'a> CacheEntry for DynamicCacheEntry<'a> {
-    fn read_impl(&mut self) -> Result<Vec<CacheValue<'static>>> {
+    fn read_impl(&mut self) -> Vec<CacheValue<'static>> {
         match self {
             Self::File(f) => f.read_impl(),
             Self::Null(n) => n.read_impl(),
         }
     }
 
-    fn write_impl(&mut self, val: &CacheValue) -> Result<()> {
+    fn append_impl(&mut self, val: &CacheValue) -> Result<()> {
         match self {
-            Self::File(f) => f.write_impl(val),
-            Self::Null(n) => n.write_impl(val),
+            Self::File(f) => f.append_impl(val),
+            Self::Null(n) => n.append_impl(val),
+        }
+    }
+
+    fn truncate(&mut self) -> Result<()> {
+        match self {
+            Self::File(f) => f.truncate(),
+            Self::Null(n) => n.truncate(),
         }
     }
 }

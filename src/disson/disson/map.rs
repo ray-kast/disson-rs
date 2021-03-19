@@ -1,4 +1,3 @@
-use log::warn;
 use nalgebra::{Matrix3, Vector2};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +8,8 @@ use crate::{cache::prelude::*, config::MapConfig, error::prelude::*};
 pub(super) struct Config {
     res: Vector2<u32>,
     view: Matrix3<f64>,
+    pitch: PitchCurve,
+    overlap: OverlapCurve,
 }
 
 impl Config {
@@ -24,6 +25,8 @@ impl Config {
             Self {
                 res: Vector2::new(width, height),
                 view: Matrix3::identity(), // TODO
+                pitch: pitch_curve,
+                overlap: overlap_curve,
             },
             (),
         )
@@ -31,11 +34,7 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CacheKey {
-    cfg: Config,
-    pitch_curve: &'static str,
-    overlap_curve: &'static str,
-}
+pub struct CacheKey(Config);
 
 pub(super) type DissonMap = Vec<f64>;
 
@@ -45,17 +44,9 @@ pub enum CacheValue {
     Histogram(()),
 }
 
-// TODO: stop using type variables for curves
-pub(super) fn compute<P: PitchCurve, O: OverlapCurve, C: for<'a> Cache<'a>>(
-    cache: C,
-    cfg: Config,
-) -> Result<DissonMap> {
+pub(super) fn compute<C: for<'a> Cache<'a>>(cache: C, cfg: Config) -> Result<DissonMap> {
     let mut cache_entry = cache
-        .entry(CacheKey {
-            cfg,
-            pitch_curve: P::ID,
-            overlap_curve: O::ID,
-        })
+        .entry(CacheKey(cfg))
         .context("couldn't open cache entry")?;
 
     // TODO: remove this type ascription
@@ -64,7 +55,10 @@ pub(super) fn compute<P: PitchCurve, O: OverlapCurve, C: for<'a> Cache<'a>>(
 
     let mut result = vec![0.0; cfg.res.x as usize * cfg.res.y as usize]; // TODO
 
-    // cache_entry.write(CacheKey
+    // TODO
+    cache_entry
+        .append(CacheValue::Block(()))
+        .context("failed to cache map blocks")?;
 
     result[cfg.res.x as usize] = 1.0;
 

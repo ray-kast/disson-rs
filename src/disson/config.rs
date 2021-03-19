@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cli::{GenerateOpts, SizeOverride},
+    disson::algo::{OverlapCurve, PitchCurve},
     error::prelude::*,
 };
 
@@ -22,23 +23,8 @@ pub struct GenerateConfig {
 pub struct MapConfig {
     pub width: u32,
     pub height: u32,
-    pub pitch_curve: PitchCurveId,
-    pub overlap_curve: OverlapCurveId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum PitchCurveId {
-    Log,
-    ErbRate,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum OverlapCurveId {
-    ExponentialDissonance,
-    TrapezoidDissonance,
-
-    TriangleConsonance,
-    TrapezoidConsonance,
+    pub pitch_curve: PitchCurve,
+    pub overlap_curve: OverlapCurve,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -66,8 +52,8 @@ impl Default for GenerateConfig {
             map: MapConfig {
                 width: 1000,
                 height: 1000,
-                pitch_curve: PitchCurveId::ErbRate,
-                overlap_curve: OverlapCurveId::ExponentialDissonance,
+                pitch_curve: PitchCurve::Erb,
+                overlap_curve: OverlapCurve::ExpDiss,
             },
             format: FormatConfig {
                 ty: FormatType::Csv,

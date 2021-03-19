@@ -1,45 +1,74 @@
-pub trait PitchCurve {
-    const ID: &'static str;
+use serde::{Deserialize, Serialize};
 
-    fn eval(hz: f64) -> f64;
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum PitchCurve {
+    #[serde(rename = "Logarithmic")]
+    Edo,
+    #[serde(rename = "ErbRate")]
+    Erb,
 }
 
-pub trait OverlapCurve {
-    const ID: &'static str;
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum OverlapCurve {
+    #[serde(rename = "ExponentialDissonance")]
+    ExpDiss,
+    #[serde(rename = "TrapezoidDissonance")]
+    TrapDiss,
+    #[serde(rename = "TriangleConsonance")]
+    TriCons,
+    #[serde(rename = "TrapezoidConsonance")]
+    TrapCons,
+}
 
-    fn eval_abs(x: f64) -> f64;
+impl PitchCurve {
+    fn edo(hz: f64) -> f64 { hz.log2() }
 
-    fn eval(a: f64, b: f64) -> f64 {
-        let abs = (b - a).abs();
-        Self::eval_abs(abs)
+    fn erb(hz: f64) -> f64 { 11.17268 * (1.0 + (hz * 46.06538) / (hz + 14678.49)).ln() }
+
+    pub fn eval(self, hz: f64) -> f64 {
+        match self {
+            Self::Edo => Self::edo(hz),
+            Self::Erb => Self::erb(hz),
+        }
+    }
+
+    pub fn collect<I: IntoIterator<Item = f64>>(self, it: I) -> Vec<f64> {
+        match self {
+            Self::Edo => it.into_iter().map(Self::edo).collect(),
+            Self::Erb => it.into_iter().map(Self::erb).collect(),
+        }
     }
 }
 
-macro_rules! curve {
-    (pitch, $name:ident, $var:ident => $fn:expr) => {
-        curve! { $name, PitchCurve, eval, $var => $fn }
-    };
+impl OverlapCurve {
+    fn exp_diss(x: f64) -> f64 { x * (1.0 - x).exp() }
 
-    (overlap, $name:ident, $var:ident => $fn:expr) => {
-        curve! { $name, OverlapCurve, eval_abs, $var => $fn }
-    };
+    fn trap_diss(x: f64) -> f64 { (3.0 * x).min(1.0) * (2.0 - x).max(0.0).min(1.0) }
 
-    ($name:ident, $trait:ident, $fname:ident, $var:ident => $fn:expr) => {
-        pub struct $name;
+    fn tri_cons(x: f64) -> f64 { (1.0 - x).max(0.0) }
 
-        impl $trait for $name {
-            const ID: &'static str = stringify!($name);
+    fn trap_cons(x: f64) -> f64 { (2.0 - x).max(0.0).min(1.0) }
 
-            fn $fname($var: f64) -> f64 { $fn }
+    #[inline]
+    fn overlap(f: impl Fn(f64) -> f64) -> impl Fn((f64, f64)) -> f64 {
+        move |(a, b)| f(b - a).abs()
+    }
+
+    pub fn eval(self, pair: (f64, f64)) -> f64 {
+        match self {
+            Self::ExpDiss => Self::overlap(Self::exp_diss)(pair),
+            Self::TrapDiss => Self::overlap(Self::trap_diss)(pair),
+            Self::TriCons => Self::overlap(Self::tri_cons)(pair),
+            Self::TrapCons => Self::overlap(Self::trap_cons)(pair),
         }
-    };
+    }
+
+    pub fn collect<I: IntoIterator<Item = (f64, f64)>>(self, it: I) -> Vec<f64> {
+        match self {
+            Self::ExpDiss => it.into_iter().map(Self::overlap(Self::exp_diss)).collect(),
+            Self::TrapDiss => it.into_iter().map(Self::overlap(Self::trap_diss)).collect(),
+            Self::TriCons => it.into_iter().map(Self::overlap(Self::tri_cons)).collect(),
+            Self::TrapCons => it.into_iter().map(Self::overlap(Self::trap_cons)).collect(),
+        }
+    }
 }
-
-curve!(pitch, EdoPitch, hz => hz.log2());
-curve!(pitch, ErbPitch, hz => 11.17268 * (1.0 + (hz * 46.06538) / (hz + 14678.49)).ln());
-
-curve!(overlap, ExpDiss, x => x * (1.0 - x).exp());
-curve!(overlap, TrapDiss, x => (3.0 * x).min(1.0) * (2.0 - x).max(0.0).min(1.0));
-
-curve!(overlap, TriCons, x => (1.0 - x).max(0.0));
-curve!(overlap, TrapCons, x => (2.0 - x).max(0.0).min(1.0));

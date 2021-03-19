@@ -1,4 +1,4 @@
-mod algo;
+pub mod algo;
 pub mod map;
 mod waves;
 
@@ -6,7 +6,7 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc as mpsc_sync, Arc,
+        Arc,
     },
 };
 
@@ -24,12 +24,6 @@ use crate::{
     error::prelude::*,
 };
 
-enum WorkerMessage {
-    CacheRead(mpsc_sync::Sender<Option<()>>),
-    CacheBlock(()),
-    Done(Result<()>),
-}
-
 async fn generate_impl<C: for<'a> Cache<'a>>(
     cache: C,
     opts: &GenerateOpts,
@@ -40,8 +34,7 @@ async fn generate_impl<C: for<'a> Cache<'a>>(
 
     let (map_cfg, fmt_opts) = map::Config::for_generate(cfg.map);
 
-    map::compute::<algo::EdoPitch, algo::ExpDiss, _>(cache, map_cfg)
-        .context("failed to generate new dissonance map")?;
+    map::compute(cache, map_cfg).context("failed to generate new dissonance map")?;
 
     Ok(())
 }
