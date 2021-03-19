@@ -8,6 +8,7 @@ mod config;
 mod disson;
 mod error;
 mod gui;
+mod tile_renderer;
 
 use cli::{GlobalOpts, Opts, Subcommand};
 use log::{error, LevelFilter};
