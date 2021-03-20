@@ -2,6 +2,9 @@
 #![deny(missing_debug_implementations)]
 #![allow(clippy::module_name_repetitions)]
 
+use cli::{GlobalOpts, Opts, Subcommand};
+use log::{error, LevelFilter};
+
 mod cache;
 mod cli;
 mod config;
@@ -9,9 +12,6 @@ mod disson;
 mod error;
 mod gui;
 mod tile_renderer;
-
-use cli::{GlobalOpts, Opts, Subcommand};
-use log::{error, LevelFilter};
 
 const VERBOSITY: [LevelFilter; 3] = [LevelFilter::Info, LevelFilter::Debug, LevelFilter::Trace];
 #[cfg(debug_assertions)]

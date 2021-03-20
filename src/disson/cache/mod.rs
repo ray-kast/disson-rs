@@ -1,4 +1,3 @@
-pub mod file;
 use std::{
     borrow::Cow,
     convert::{TryFrom, TryInto},
@@ -11,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{cli::CacheMode, disson::map, error::prelude::*};
+
+pub mod file;
 
 pub mod prelude {
     pub use super::{Cache, CacheEntry, CacheEntryExt, CacheExt};

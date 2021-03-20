@@ -1,7 +1,3 @@
-pub mod algo;
-pub mod map;
-mod waves;
-
 use std::{
     future::Future,
     sync::{
@@ -23,6 +19,10 @@ use crate::{
     config::GenerateConfig,
     error::prelude::*,
 };
+
+pub mod algo;
+pub mod map;
+mod waves;
 
 async fn generate_impl<C: for<'a> Cache<'a>>(
     cache: C,
