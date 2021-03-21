@@ -1,12 +1,12 @@
 use std::{
     fs::File,
     io::{prelude::*, stdout},
-    path::PathBuf,
 };
 
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
 
+pub use crate::cli::{MapFormat, MapOutput};
 use crate::{
     cli::{GenerateOpts, SizeOverride},
     disson::algo::{OverlapCurve, PitchCurve},
@@ -23,28 +23,13 @@ pub struct GenerateConfig {
 pub struct MapConfig {
     pub width: u32,
     pub height: u32,
+    pub base_frequency: f64,
     pub pitch_curve: PitchCurve,
     pub overlap_curve: OverlapCurve,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FormatConfig {
-    #[serde(rename = "type")]
-    pub ty: FormatType,
-    pub out: MapOutput,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FormatType {
-    Csv,
-    Png,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MapOutput {
-    Stdout,
-    File(PathBuf),
-}
+pub struct FormatConfig {}
 
 impl Default for GenerateConfig {
     fn default() -> Self {
@@ -52,24 +37,82 @@ impl Default for GenerateConfig {
             map: MapConfig {
                 width: 1000,
                 height: 1000,
+                base_frequency: 440.0,
                 pitch_curve: PitchCurve::Erb,
                 overlap_curve: OverlapCurve::ExpDiss,
             },
-            format: FormatConfig {
-                ty: FormatType::Csv,
-                out: MapOutput::Stdout,
-            },
+            format: FormatConfig {},
         }
     }
 }
 
 impl GenerateConfig {
+    fn override_size(
+        size: &SizeOverride,
+        MapConfig { width, height, .. }: &mut MapConfig,
+    ) -> Result<()> {
+        match size {
+            SizeOverride::Width(w) => {
+                let h = (f64::from(*w) * f64::from(*height) / f64::from(*width)).round();
+
+                if !h.is_normal() {
+                    return Err(anyhow!("couldn't calculate new map height for override"));
+                }
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    *width = *w;
+                    *height = h as u32;
+                }
+            },
+            SizeOverride::Height(h) => {
+                let w = (f64::from(*h) * f64::from(*width) / f64::from(*height)).round();
+
+                if !w.is_normal() {
+                    return Err(anyhow!("couldn't calculate new map width for override"));
+                }
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    *width = w as u32;
+                    *height = *h;
+                }
+            },
+            SizeOverride::Exact(w, h) => {
+                *width = *w;
+                *height = *h;
+            },
+            SizeOverride::Percent(p) => {
+                if *p < 1e-7 {
+                    return Err(anyhow!(
+                        "invalid percentage for map size override, must be non-negative"
+                    ));
+                }
+
+                let w = (f64::from(*width) * *p).round();
+                let h = (f64::from(*height) * p).round();
+
+                if !(w.is_normal() && h.is_normal()) {
+                    return Err(anyhow!("couldn't calculate new map size for override"));
+                }
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    *width = w as u32;
+                    *height = h as u32;
+                }
+            },
+        }
+
+        Ok(())
+    }
+
     pub fn read(opts: &GenerateOpts) -> Result<Self> {
         let GenerateOpts {
             config,
             size,
-            ty,
-            out,
+            ty: _,
+            out: _,
         } = opts;
 
         let file = File::open(config).context("failed to open config file")?;
@@ -78,64 +121,7 @@ impl GenerateConfig {
             ron::de::from_reader(file).context("failed to read config file")?;
 
         if let Some(size) = size {
-            match size {
-                SizeOverride::Width(w) => {
-                    let MapConfig { width, height, .. } = &mut cfg.map;
-
-                    let h = (f64::from(*w) * f64::from(*height) / f64::from(*width)).round();
-
-                    if !h.is_normal() {
-                        return Err(anyhow!("couldn't calculate new map height for override"));
-                    }
-
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    {
-                        *width = *w;
-                        *height = h as u32;
-                    }
-                },
-                SizeOverride::Height(h) => {
-                    let MapConfig { width, height, .. } = &mut cfg.map;
-
-                    let w = (f64::from(*h) * f64::from(*width) / f64::from(*height)).round();
-
-                    if !w.is_normal() {
-                        return Err(anyhow!("couldn't calculate new map width for override"));
-                    }
-
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    {
-                        *width = w as u32;
-                        *height = *h;
-                    }
-                },
-                SizeOverride::Exact(w, h) => {
-                    cfg.map.width = *w;
-                    cfg.map.height = *h;
-                },
-                SizeOverride::Percent(p) => {
-                    if *p < 1e-7 {
-                        return Err(anyhow!(
-                            "invalid percentage for map size override, must be non-negative"
-                        ));
-                    }
-
-                    let MapConfig { width, height, .. } = &mut cfg.map;
-
-                    let w = (f64::from(*width) * *p).round();
-                    let h = (f64::from(*height) * p).round();
-
-                    if !(w.is_normal() && h.is_normal()) {
-                        return Err(anyhow!("couldn't calculate new map size for override"));
-                    }
-
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    {
-                        *width = w as u32;
-                        *height = h as u32;
-                    }
-                },
-            }
+            Self::override_size(size, &mut cfg.map)?;
         }
 
         Ok(cfg)

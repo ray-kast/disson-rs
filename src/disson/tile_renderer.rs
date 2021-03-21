@@ -7,6 +7,7 @@ use backbuf::BackBuffer;
 use log::trace;
 use nalgebra::Vector2;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 mod backbuf {
     use std::{mem, ptr, ptr::NonNull, slice, sync::RwLock};
@@ -98,7 +99,7 @@ pub trait TileRenderFunction: Send + Sync {
     fn process(&self, tile: Tile<Self::Input, Self::Output>);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TileRange {
     pub pos: Vector2<u32>,
     pub size: Vector2<u32>,
@@ -141,7 +142,7 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
     pub fn run<
         I: AsRef<[F::Input]> + Sync,
         P: AsRef<[F::Output]> + Sync,
-        C: AsRef<AtomicBool> + Sync,
+        C: std::borrow::Borrow<AtomicBool> + Sync,
     >(
         &self,
         size: Vector2<u32>,
@@ -175,7 +176,7 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
         let ctr = size / 2;
         let bbuf = BackBuffer::new(size);
 
-        tiles.sort_by(|a, b| {
+        tiles.par_sort_by(|a, b| {
             let ca = a.pos + a.size / 2;
             let cb = b.pos + b.size / 2;
 
@@ -215,7 +216,7 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
                     }
                 }
 
-                if cancel.as_ref().load(Ordering::Relaxed) {
+                if cancel.borrow().load(Ordering::Relaxed) {
                     None
                 } else {
                     Some(())

@@ -1,4 +1,8 @@
+use std::iter::FromIterator;
+
 use serde::{Deserialize, Serialize};
+
+use super::wave::Partial;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PitchCurve {
@@ -25,6 +29,14 @@ impl PitchCurve {
 
     fn erb(hz: f64) -> f64 { 11.17268 * (1.0 + (hz * 46.06538) / (hz + 14678.49)).ln() }
 
+    #[inline]
+    fn partial(f: impl Fn(f64) -> f64) -> impl Fn(&Partial) -> Partial {
+        move |p| Partial {
+            pitch: f(p.pitch),
+            ..*p
+        }
+    }
+
     pub fn eval(self, hz: f64) -> f64 {
         match self {
             Self::Edo => Self::edo(hz),
@@ -36,6 +48,16 @@ impl PitchCurve {
         match self {
             Self::Edo => it.into_iter().map(Self::edo).collect(),
             Self::Erb => it.into_iter().map(Self::erb).collect(),
+        }
+    }
+
+    pub fn collect_partials<'a, I: IntoIterator<Item = &'a Partial>, F: FromIterator<Partial>>(
+        self,
+        it: I,
+    ) -> F {
+        match self {
+            Self::Edo => it.into_iter().map(Self::partial(Self::edo)).collect(),
+            Self::Erb => it.into_iter().map(Self::partial(Self::erb)).collect(),
         }
     }
 }
@@ -51,7 +73,7 @@ impl OverlapCurve {
 
     #[inline]
     fn overlap(f: impl Fn(f64) -> f64) -> impl Fn((f64, f64)) -> f64 {
-        move |(a, b)| f(b - a).abs()
+        move |(a, b)| f((b - a).abs())
     }
 
     pub fn eval(self, pair: (f64, f64)) -> f64 {

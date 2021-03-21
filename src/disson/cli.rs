@@ -5,6 +5,8 @@ use regex::{Regex, RegexBuilder};
 use structopt::StructOpt;
 use thiserror::Error;
 
+use crate::error::prelude::*;
+
 #[derive(Debug, StructOpt)]
 pub struct Opts {
     #[structopt(flatten)]
@@ -70,14 +72,45 @@ pub struct GenerateOpts {
     pub size: Option<SizeOverride>,
 
     /// The format to output the result in
-    #[structopt(name = "type", short, long)]
-    pub ty: Option<OutputType>,
+    #[structopt(name = "type", short, long, requires("out"))]
+    pub ty: Option<MapFormat>,
 
     #[structopt(short, long, default_value = "-")]
-    pub out: Output,
+    pub out: MapOutput,
 }
 
-#[derive(Error, Debug)]
+impl GenerateOpts {
+    pub fn ty(&self) -> Result<MapFormat> {
+        self.ty.map_or_else(
+            || {
+                Ok(match self.out {
+                    MapOutput::Stdout => MapFormat::TSV,
+                    MapOutput::File(ref p) => match p
+                        .extension()
+                        .map(|s| {
+                            s.to_str()
+                                .ok_or_else(|| anyhow!("couldn't read output file extension"))
+                        })
+                        .transpose()?
+                    {
+                        Some("png") => MapFormat::Png,
+                        Some("csv") => MapFormat::CSV,
+                        Some("tsv") | Some("txt") | None => MapFormat::TSV,
+                        Some(e) => {
+                            return Err(anyhow!(
+                                "couldn't guess output format from file extension {:?}",
+                                e
+                            ))
+                        },
+                    },
+                })
+            },
+            Ok,
+        )
+    }
+}
+
+#[derive(Debug, Error)]
 pub enum FromStrErr {
     #[error("value {0:?} did not match any of {}", .1.join(", "))]
     OneOf(String, &'static [&'static str]),
@@ -95,14 +128,14 @@ pub enum CacheMode {
     File(Option<PathBuf>),
 }
 
-#[derive(Debug)]
-pub enum OutputType {
-    Csv,
+#[derive(Debug, Clone, Copy)]
+pub enum MapFormat {
+    Xsv(u8),
     Png,
 }
 
-#[derive(Debug)]
-pub enum Output {
+#[derive(Debug, Clone)]
+pub enum MapOutput {
     Stdout,
     File(PathBuf),
 }
@@ -127,19 +160,25 @@ impl FromStr for CacheMode {
     }
 }
 
-impl FromStr for OutputType {
+impl MapFormat {
+    const CSV: Self = Self::Xsv(b',');
+    const TSV: Self = Self::Xsv(b'\t');
+}
+
+impl FromStr for MapFormat {
     type Err = FromStrErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().as_ref() {
-            "csv" => Self::Csv,
+            "csv" => Self::CSV,
+            "tsv" => Self::TSV,
             "png" => Self::Png,
-            _ => return Err(FromStrErr::OneOf(s.into(), &["csv", "png"])),
+            _ => return Err(FromStrErr::OneOf(s.into(), &["csv", "tsv", "png"])),
         })
     }
 }
 
-impl FromStr for Output {
+impl FromStr for MapOutput {
     type Err = FromStrErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
