@@ -3,11 +3,15 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use itertools::Itertools;
 use log::{trace, warn};
 use nalgebra::{Point2, Transform2, Vector2};
 use serde::{Deserialize, Serialize};
 
-use super::algo::{OverlapCurve, PitchCurve};
+use super::{
+    algo::{OverlapCurve, PitchCurve},
+    wave::{Partial, Wave},
+};
 use crate::{
     cache::prelude::*,
     config::MapConfig,
@@ -17,7 +21,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct Config {
-    res: Vector2<u32>,
+    size: Vector2<u32>,
     view: Transform2<f64>,
     base_hz: f64,
     pitch: PitchCurve,
@@ -35,7 +39,7 @@ impl Config {
         } = *cfg;
 
         Self {
-            res: Vector2::new(width, height),
+            size: Vector2::new(width, height),
             view: Transform2::identity(), // TODO
             base_hz: base_frequency,
             pitch: pitch_curve,
@@ -58,9 +62,14 @@ pub enum CacheValue {
     Histogram(()),
 }
 
-struct RenderFunction(PitchCurve, OverlapCurve);
+struct RenderFunction<'a> {
+    pitch: PitchCurve,
+    overlap: OverlapCurve,
+    wave: Wave,
+    base_wave: &'a Wave,
+}
 
-impl TileRenderFunction for RenderFunction {
+impl<'a> TileRenderFunction for RenderFunction<'a> {
     type Input = Point2<f64>;
     type Output = f64;
 
@@ -68,10 +77,30 @@ impl TileRenderFunction for RenderFunction {
         for r in 0..tile.range().size.y {
             let (row_in, row_out) = tile.row_mut(r);
 
-            for c in 0..row_in.len() {
-                row_out[c] = row_in[c].x; // TODO
+            for (ins, out) in row_in.iter().zip(row_out.iter_mut()) {
+                let wave_x: Wave<_> = self
+                    .pitch
+                    .collect_partials(self.wave.map_pitch(|p| p * ins.x));
+
+                let wave_y: Wave<_> = self
+                    .pitch
+                    .collect_partials(self.wave.map_pitch(|p| p * ins.y));
+
+                let it = self
+                    .base_wave
+                    .iter()
+                    .chain(wave_x.iter())
+                    .chain(wave_y.iter());
+
+                *out = self
+                    .overlap
+                    .collect_partials::<_, Vec<_>>(it.clone().cartesian_product(it))
+                    .into_iter()
+                    .sum::<f64>();
             }
         }
+
+        // TODO: cache stuff
     }
 }
 
@@ -83,6 +112,14 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
     let mut cache_entry = cache
         .entry(CacheKey(cfg))
         .context("couldn't open cache entry")?;
+
+    let Config {
+        size,
+        view,
+        base_hz,
+        pitch,
+        overlap,
+    } = cfg;
 
     let mut blk_preload = HashMap::new();
     let mut hist_preload = None;
@@ -110,18 +147,18 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
     trace!("Computing map inputs...");
 
     let pitches: Vec<_> = {
-        let denom = (cfg.res - Vector2::new(1, 1)).cast::<f64>();
+        let denom = (size - Vector2::new(1, 1)).cast::<f64>();
 
-        let coords = (0..cfg.res.x).into_iter().flat_map(move |r| {
-            (0..cfg.res.y).into_iter().map(move |c| {
-                cfg.view * Point2::from(Vector2::new(c, r).cast::<f64>().component_div(&denom))
+        let coords = (0..size.x).into_iter().flat_map(move |r| {
+            (0..size.y).into_iter().map(move |c| {
+                view * Point2::from(Vector2::new(c, r).cast::<f64>().component_div(&denom))
             })
         });
 
         coords
             .map(|mut c| {
-                c.x = cfg.base_hz * 2.0_f64.powf(c.x);
-                c.y = cfg.base_hz * 2.0_f64.powf(c.y);
+                c.x = base_hz * 2.0_f64.powf(c.x);
+                c.y = base_hz * 2.0_f64.powf(c.y);
                 c
             })
             .take_while(|_| !cancel.load(Ordering::Relaxed))
@@ -134,12 +171,24 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
 
     trace!("Rendering map...");
 
-    let data = DefaultTileRenderer::new(RenderFunction(cfg.pitch, cfg.overlap)).run(
-        cfg.res,
-        pitches,
-        &blk_preload,
-        cancel,
-    );
+    // TODO
+    let wave: Wave = (1..=32)
+        .into_iter()
+        .map(|i| Partial {
+            pitch: i.into(),
+            amp: 1.0 / f64::from(i),
+        })
+        .collect();
+
+    let base_wave = &pitch.collect_partials(wave.map_pitch(|p| p * base_hz));
+
+    let data = DefaultTileRenderer::new(RenderFunction {
+        pitch,
+        overlap,
+        wave,
+        base_wave,
+    })
+    .run(size, pitches, &blk_preload, cancel)?;
 
     if cancel.load(Ordering::SeqCst) {
         return Err(Cancelled);
@@ -150,8 +199,5 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
         .append(CacheValue::Histogram(()))
         .context("failed to cache map histogram")?;
 
-    Ok(DissonMap {
-        size: cfg.res,
-        data,
-    })
+    Ok(DissonMap { size, data })
 }

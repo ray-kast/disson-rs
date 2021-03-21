@@ -30,10 +30,10 @@ impl PitchCurve {
     fn erb(hz: f64) -> f64 { 11.17268 * (1.0 + (hz * 46.06538) / (hz + 14678.49)).ln() }
 
     #[inline]
-    fn partial(f: impl Fn(f64) -> f64) -> impl Fn(&Partial) -> Partial {
+    fn partial(f: impl Fn(f64) -> f64) -> impl Fn(Partial) -> Partial {
         move |p| Partial {
             pitch: f(p.pitch),
-            ..*p
+            ..p
         }
     }
 
@@ -51,7 +51,7 @@ impl PitchCurve {
         }
     }
 
-    pub fn collect_partials<'a, I: IntoIterator<Item = &'a Partial>, F: FromIterator<Partial>>(
+    pub fn collect_partials<I: IntoIterator<Item = Partial>, F: FromIterator<Partial>>(
         self,
         it: I,
     ) -> F {
@@ -73,7 +73,14 @@ impl OverlapCurve {
 
     #[inline]
     fn overlap(f: impl Fn(f64) -> f64) -> impl Fn((f64, f64)) -> f64 {
-        move |(a, b)| f((b - a).abs())
+        // TODO
+        move |(a, b)| f((b - a).abs() * 12.0)
+    }
+
+    #[inline]
+    fn partial(f: impl Fn(f64) -> f64) -> impl Fn((&Partial, &Partial)) -> f64 {
+        let f = Self::overlap(f);
+        move |(a, b)| f((a.pitch, b.pitch)) * a.amp * b.amp
     }
 
     pub fn eval(self, pair: (f64, f64)) -> f64 {
@@ -91,6 +98,22 @@ impl OverlapCurve {
             Self::TrapDiss => it.into_iter().map(Self::overlap(Self::trap_diss)).collect(),
             Self::TriCons => it.into_iter().map(Self::overlap(Self::tri_cons)).collect(),
             Self::TrapCons => it.into_iter().map(Self::overlap(Self::trap_cons)).collect(),
+        }
+    }
+
+    pub fn collect_partials<
+        'a,
+        I: IntoIterator<Item = (&'a Partial, &'a Partial)>,
+        F: FromIterator<f64>,
+    >(
+        self,
+        it: I,
+    ) -> F {
+        match self {
+            Self::ExpDiss => it.into_iter().map(Self::partial(Self::exp_diss)).collect(),
+            Self::TrapDiss => it.into_iter().map(Self::partial(Self::trap_diss)).collect(),
+            Self::TriCons => it.into_iter().map(Self::partial(Self::tri_cons)).collect(),
+            Self::TrapCons => it.into_iter().map(Self::partial(Self::trap_cons)).collect(),
         }
     }
 }

@@ -9,6 +9,8 @@ use nalgebra::Vector2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::error::cancel::prelude::*;
+
 mod backbuf {
     use std::{mem, ptr, ptr::NonNull, slice, sync::RwLock};
 
@@ -117,10 +119,11 @@ impl<'a, I, O> Tile<'a, I, O> {
 
     pub fn row_mut<'b>(&'b mut self, y: u32) -> (&'b [I], &'b mut [O])
     where 'a: 'b {
+        let offs = self.range.pos.cast::<usize>();
         let y = y as usize;
         let row_len = self.range.size.x as usize;
         let out_stride = row_len;
-        let in_i = y * self.in_stride;
+        let in_i = offs.x + (y + offs.y) * self.in_stride;
         let out_i = y * out_stride;
 
         (
@@ -149,7 +152,7 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
         buf_in: I,
         preload: &HashMap<TileRange, P>,
         cancel: C,
-    ) -> Box<[F::Output]> {
+    ) -> CancelResult<Box<[F::Output]>> {
         assert_eq!(
             buf_in.as_ref().len(),
             size.x as usize * size.y as usize,
@@ -225,6 +228,10 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
             .while_some()
             .for_each(|()| ());
 
-        bbuf.into_inner()
+        if cancel.borrow().load(Ordering::SeqCst) {
+            Err(Cancelled)
+        } else {
+            Ok(bbuf.into_inner())
+        }
     }
 }
