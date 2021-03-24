@@ -117,6 +117,8 @@ pub struct Tile<'a, I, O> {
 impl<'a, I, O> Tile<'a, I, O> {
     pub fn range(&self) -> &TileRange { &self.range }
 
+    pub fn out(&self) -> &[O] { &self.buf_out }
+
     pub fn row_mut<'b>(&'b mut self, y: u32) -> (&'b [I], &'b mut [O])
     where 'a: 'b {
         let offs = self.range.pos.cast::<usize>();

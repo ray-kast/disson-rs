@@ -1,6 +1,10 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
 use itertools::Itertools;
@@ -57,19 +61,20 @@ pub(super) struct DissonMap {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CacheValue {
-    Block(TileRange, Vec<f64>),
+pub enum CacheValue<'a> {
+    Block(TileRange, Cow<'a, [f64]>),
     Histogram(()),
 }
 
-struct RenderFunction<'a> {
+struct RenderFunction<'a, E: CacheEntry> {
+    cache_entry: &'a Mutex<E>,
     pitch: PitchCurve,
     overlap: OverlapCurve,
     wave: Wave,
     base_wave: &'a Wave,
 }
 
-impl<'a> TileRenderFunction for RenderFunction<'a> {
+impl<'a, E: CacheEntry + Send> TileRenderFunction for RenderFunction<'a, E> {
     type Input = Point2<f64>;
     type Output = f64;
 
@@ -100,7 +105,18 @@ impl<'a> TileRenderFunction for RenderFunction<'a> {
             }
         }
 
-        // TODO: cache stuff
+        // TODO: run this asynchronously
+        match self
+            .cache_entry
+            .lock()
+            .unwrap()
+            .append(CacheValue::Block(*tile.range(), Cow::Borrowed(tile.out())))
+        {
+            Ok(()) => (),
+            Err(e) => {
+                warn!("Error caching tile {}: {:?}", tile.range().pos, e);
+            },
+        }
     }
 }
 
@@ -180,9 +196,11 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
         })
         .collect();
 
+    let cache_mutex = Mutex::new(cache_entry);
     let base_wave = &pitch.collect_partials(wave.map_pitch(|p| p * base_hz));
 
     let data = DefaultTileRenderer::new(RenderFunction {
+        cache_entry: &cache_mutex,
         pitch,
         overlap,
         wave,
@@ -194,7 +212,8 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
         return Err(Cancelled);
     }
 
-    // TODO
+    let mut cache_entry = cache_mutex.into_inner().unwrap();
+
     cache_entry
         .append(CacheValue::Histogram(()))
         .context("failed to cache map histogram")?;

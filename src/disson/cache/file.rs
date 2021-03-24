@@ -275,7 +275,7 @@ fn write_header(file: &mut File, key_bytes: &[u8]) -> Result<usize> {
     Ok(magic.len() + key_bytes.len())
 }
 
-fn is_at_eof(mut file: &File) -> Result<bool> {
+fn is_at_eof(mut file: &File) -> Result<(bool, u64)> {
     let pos = file
         .stream_position()
         .context("failed to get file position")?;
@@ -289,24 +289,35 @@ fn is_at_eof(mut file: &File) -> Result<bool> {
             .context("failed to restore file position")?;
     }
 
-    Ok(eof)
+    Ok((eof, pos))
 }
 
-fn read_block(file: &File) -> Option<Vec<CacheValue<'static>>> {
-    match is_at_eof(file) {
-        Ok(true) => return None,
-        Ok(false) => (),
+enum Block {
+    /// A block was successfully read, and more blocks may be available
+    Good(Vec<CacheValue<'static>>),
+    /// A block may have been partially read, but the rest of the file is not
+    /// recoverable - the file should be truncated to the length given and the
+    /// data should be recovered
+    Corrupt(Vec<CacheValue<'static>>, u64),
+    /// No more blocks are available
+    Eof,
+}
+
+fn read_block(file: &File) -> Block {
+    let pos = match is_at_eof(file) {
+        Ok((true, _)) => return Block::Eof,
+        Ok((false, p)) => p,
         Err(e) => {
             warn!("Failed to check for end of cache file: {:?}", e);
-            return None;
+            return Block::Eof; // Can't return Corrupt because it requires pos
         },
-    }
+    };
 
     let mut dec = match zstd::Decoder::new(file) {
         Ok(d) => d,
         Err(e) => {
             warn!("Failed to open zstd decoder on cache file: {:?}", e);
-            return None;
+            return Block::Corrupt(vec![], pos);
         },
     };
 
@@ -315,21 +326,17 @@ fn read_block(file: &File) -> Option<Vec<CacheValue<'static>>> {
     loop {
         match val_bin_opts().deserialize_from(&mut dec) {
             Ok(Some(val)) => ret.push(val),
-            Ok(None) => break,
+            Ok(None) => return Block::Good(ret),
             Err(e) => {
+                // TODO: either mark the file as partially unreadable or
+                // attempt to stream a corrupted block back into the file
+
                 warn!("Failed to read cache value: {:?}", e);
 
-                // If no values are valid, don't attempt to continue reading
-                if ret.is_empty() {
-                    return None;
-                }
-
-                break;
+                return Block::Corrupt(ret, pos);
             },
         }
     }
-
-    Some(ret)
 }
 
 fn make_stream(file: File) -> Result<zstd::Encoder<'static, File>> {
@@ -338,6 +345,27 @@ fn make_stream(file: File) -> Result<zstd::Encoder<'static, File>> {
 
 impl<'a> CacheEntry for FileCacheEntry<'a> {
     fn read_impl(&mut self) -> Vec<CacheValue<'static>> {
+        fn recover(
+            mut file: File,
+            pos: u64,
+            blk: &[CacheValue],
+        ) -> Result<zstd::Encoder<'static, File>> {
+            file.set_len(pos).context("failed to truncate file")?;
+
+            file.seek(SeekFrom::End(0))
+                .context("failed to seek to end-of-file")?;
+
+            let mut stream = make_stream(file)?;
+
+            for val in blk {
+                val_bin_opts()
+                    .serialize_into(&mut stream, &Some(val))
+                    .context("failed to write recovered value")?;
+            }
+
+            Ok(stream)
+        }
+
         self.0 = match mem::take(&mut self.0) {
             Entry::Unopened { path, key_bytes } => match open_file(&path, &key_bytes) {
                 Ok((file, header_len)) => Entry::Open { file, header_len },
@@ -354,8 +382,27 @@ impl<'a> CacheEntry for FileCacheEntry<'a> {
         if let Entry::Open { ref mut file, .. } = self.0 {
             let mut ret = vec![];
 
-            while let Some(mut blk) = read_block(file) {
-                ret.append(&mut blk);
+            let recover_from = loop {
+                match read_block(file) {
+                    Block::Good(mut b) => ret.append(&mut b),
+                    Block::Corrupt(mut b, p) => {
+                        let i = ret.len();
+                        ret.append(&mut b);
+                        break Some((p, &ret[i..]));
+                    },
+                    Block::Eof => break None,
+                }
+            };
+
+            if let Some((pos, blk)) = recover_from {
+                if let Entry::Open { file, header_len } = mem::take(&mut self.0) {
+                    match recover(file, pos, blk) {
+                        Ok(stream) => self.0 = Entry::Streaming { stream, header_len },
+                        Err(e) => {
+                            warn!("Failed to recover corrupted cache block: {:?}", e);
+                        },
+                    }
+                }
             }
 
             ret

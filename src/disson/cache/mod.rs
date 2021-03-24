@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     convert::{TryFrom, TryInto},
     error::Error as StdError,
     ops::{Deref, DerefMut},
@@ -24,21 +23,21 @@ pub struct ConvertError(&'static str, &'static str);
 macro_rules! cache_enum {
     () => ();
 
-    (enum $name:ident $body:tt $($rest:tt)*) => {
-        cache_enum!(@process_body $name, $body);
+    (enum $name:ident <$lt:lifetime> { $($body:tt)* } $($rest:tt)*) => {
+        cache_enum!(@process_body $name <$lt> { $($body)* });
         cache_enum!($($rest)*);
     };
 
-    (@process_body $name:ident, $body:tt) => {
-        cache_enum!(@process_body $name $body {} {});
+    (@process_body $name:ident <$lt:lifetime> { $($body:tt)* }) => {
+        cache_enum!(@process_body $name <$lt> { $($body)* } {} {});
     };
 
-    (@process_body Key
+    (@process_body Key <$lt:lifetime>
         { $name:ident($ty:ty) $(, $($rest:tt)*)? }
         { $($out:tt)* }
         { $($impls:item)* }
     ) => {
-        cache_enum!(@process_body Key
+        cache_enum!(@process_body Key <$lt>
             { $($($rest)*)? }
             {
                 $($out)*
@@ -52,58 +51,85 @@ macro_rules! cache_enum {
         );
     };
 
-    (@process_body Value
+    (@process_body Value <$lt:lifetime>
         { $name:ident($ty:ty) $(, $($rest:tt)*)? }
         { $($out:tt)* }
         { $($impls:item)* }
     ) => {
-        cache_enum!(@process_body Value
+        cache_enum!(@process_body Value <$lt>
             { $($($rest)*)? }
             {
                 $($out)*
-                $name(Cow<'a, $ty>),
+                $name($ty),
             }
             {
                 $($impls)*
-                cache_enum!(@from_impl Value $name $ty);
-                cache_enum!(@try_into_impl Value $name $ty);
+                cache_enum!(@from_impl Value <$lt> $name $ty);
+                cache_enum!(@try_into_impl Value <$lt> $name $ty);
             }
         );
     };
 
-    (@process_body Key {} { $($body:tt)* } { $($impls:item)* }) => {
+    (@process_body Value <$lt:lifetime>
+        { #[cow] $name:ident($ty:ty) $(, $($rest:tt)*)? }
+        { $($out:tt)* }
+        { $($impls:item)* }
+    ) => {
+        cache_enum!(@process_body Value <$lt>
+            { $($($rest)*)? }
+            {
+                $($out)*
+                $name(Cow<$lt, $ty>),
+            }
+            {
+                $($impls)*
+                cache_enum!(@from_impl Value #[cow] $name $ty);
+                cache_enum!(@try_into_impl Value #[cow] $name $ty);
+            }
+        );
+    };
+
+    (@process_body Key <$lt:lifetime> {} { $($body:tt)* } { $($impls:item)* }) => {
         #[derive(Debug, Clone, Serialize)]
         pub enum CacheKey { $($body)* }
 
         $($impls)*
     };
 
-    (@process_body Value {} { $($body:tt)* } { $($impls:item)* }) => {
+    (@process_body Value <$lt:lifetime> {} { $($body:tt)* } { $($impls:item)* }) => {
         #[derive(Debug, Serialize, Deserialize)]
-        pub enum CacheValue<'a> { $($body)* }
+        pub enum CacheValue<$lt> { $($body)* }
 
         $($impls)*
     };
 
     (@from_impl Key $var:ident $ty:ty) => {
-        impl<'__a> ::std::convert::From<$ty> for CacheKey {
-            fn from(__v: $ty) -> Self { Self::$var(__v) }
+        cache_enum! {
+            @from_impl_item ($ty => CacheKey)
+            |__v| Self::$var(__v)
         }
     };
 
-    (@from_impl Value $var:ident $ty:ty) => {
+    (@from_impl Value <$lt:lifetime> $var:ident $ty:ty) => {
         cache_enum! {
-            @from_impl_item '__a (::std::borrow::Cow<'__a, $ty> => CacheValue<'__a>)
+            @from_impl_item $lt ($ty => CacheValue<$lt>)
+            |__v| Self::$var(__v)
+        }
+    };
+
+    (@from_impl Value <$lt:lifetime> #[cow] $var:ident $ty:ty) => {
+        cache_enum! {
+            @from_impl_item $lt (::std::borrow::Cow<$lt, $ty> => CacheValue<$lt>)
             |__v| Self::$var(__v)
         }
 
         cache_enum! {
-            @from_impl_item '__a ($ty => CacheValue<'__a>)
+            @from_impl_item $lt ($ty => CacheValue<$lt>)
             |__v| Self::$var(::std::borrow::Cow::Owned(__v))
         }
 
         cache_enum! {
-            @from_impl_item '__a (&'__a $ty => CacheValue<'__a>)
+            @from_impl_item $lt (&$lt $ty => CacheValue<$lt>)
             |__v| Self::$var(::std::borrow::Cow::Borrowed(__v))
         }
     };
@@ -119,9 +145,20 @@ macro_rules! cache_enum {
         }
     };
 
-    (@try_into_impl Value $var:ident $ty:ty) => {
+    (@try_into_impl Value <$lt:lifetime> $var:ident $ty:ty) => {
         cache_enum! {
-            @try_into_impl_item '__a (CacheValue<'__a> => ::std::borrow::Cow<'__a, $ty>)
+            @try_into_impl_item $lt (CacheValue<$lt> => $ty)
+            |__v| match __v {
+                CacheValue::$var(__v) => Ok(__v),
+                #[allow(unreachable_patterns)]
+                _ => Err(ConvertError("value", stringify!($var))),
+            }
+        }
+    };
+
+    (@try_into_impl Value <$lt:lifetime> #[cow] $var:ident $ty:ty) => {
+        cache_enum! {
+            @try_into_impl_item $lt (CacheValue<$lt> => ::std::borrow::Cow<$lt, $ty>)
             |__v| match __v {
                 CacheValue::$var(__v) => Ok(__v),
                 #[allow(unreachable_patterns)]
@@ -130,7 +167,7 @@ macro_rules! cache_enum {
         }
 
         cache_enum! {
-            @try_into_impl_item '__a (CacheValue<'__a> => $ty)
+            @try_into_impl_item $lt (CacheValue<$lt> => $ty)
             |__v| match __v {
                 CacheValue::$var(__v) => Ok(__v.into_owned()),
                 #[allow(unreachable_patterns)]
@@ -158,12 +195,12 @@ macro_rules! cache_enum {
 }
 
 cache_enum! {
-    enum Key {
+    enum Key<'a> {
         Map(map::CacheKey),
     }
 
-    enum Value {
-        Map(map::CacheValue),
+    enum Value<'a> {
+        Map(map::CacheValue<'a>),
     }
 }
 
@@ -185,7 +222,7 @@ impl<'a, T: Cache<'a> + ?Sized + 'a, U: Deref<Target = T> + Send + Sync> Cache<'
     fn clean(&self) -> Result<()> { (<Self as Deref>::deref(self) as &T).clean() }
 }
 
-pub trait CacheEntry {
+pub trait CacheEntry: Send {
     fn read_impl(&mut self) -> Vec<CacheValue<'static>>;
 
     fn append_impl(&mut self, val: &CacheValue) -> Result<()>;
@@ -194,7 +231,7 @@ pub trait CacheEntry {
     fn truncate(&mut self) -> Result<()>;
 }
 
-impl<T: CacheEntry + ?Sized, U: Deref<Target = T> + DerefMut> CacheEntry for U {
+impl<T: CacheEntry + ?Sized, U: Deref<Target = T> + DerefMut + Send> CacheEntry for U {
     fn read_impl(&mut self) -> Vec<CacheValue<'static>> {
         (<Self as DerefMut>::deref_mut(self) as &mut T).read_impl()
     }
@@ -219,15 +256,15 @@ impl<'a, T: Cache<'a> + ?Sized> CacheExt<'a> for T {
 }
 
 pub trait CacheEntryExt<'a>: CacheEntry {
-    fn read<V: for<'v> TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
+    fn read<'v, V: TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
         &'a mut self,
     ) -> Result<Vec<V>>;
 
-    fn append<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()>;
+    fn append<'v, V: Into<CacheValue<'v>>>(&'a mut self, val: V) -> Result<()>;
 }
 
 impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
-    fn read<V: for<'v> TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
+    fn read<'v, V: TryFrom<CacheValue<'v>, Error = E>, E: 'static + StdError + Send + Sync>(
         &'a mut self,
     ) -> Result<Vec<V>> {
         self.read_impl()
@@ -236,7 +273,7 @@ impl<'a, T: CacheEntry + ?Sized + 'a> CacheEntryExt<'a> for T {
             .collect()
     }
 
-    fn append<V: Into<CacheValue<'static>>>(&'a mut self, val: V) -> Result<()> {
+    fn append<'v, V: Into<CacheValue<'v>>>(&'a mut self, val: V) -> Result<()> {
         self.append_impl(&val.into())
     }
 }
