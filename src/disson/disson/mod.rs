@@ -1,13 +1,4 @@
-use std::{
-    borrow::Borrow,
-    fs::File,
-    future::Future,
-    io,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use std::{borrow::Borrow, fs::File, future::Future, io, sync::Arc};
 
 use anyhow::anyhow;
 use dispose::defer;
@@ -20,9 +11,10 @@ use tokio::{runtime, select, signal, sync::mpsc};
 use crate::{
     cache,
     cache::prelude::*,
+    cancel::prelude::*,
     cli::{CacheMode, GenerateOpts},
     config::{GenerateConfig, MapFormat, MapOutput},
-    error::cancel::prelude::*,
+    error::prelude::*,
 };
 
 pub mod algo;
@@ -33,7 +25,7 @@ fn write_xsv<W: io::Write>(
     map: &DissonMap,
     delim: u8,
     out: W,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
 ) -> CancelResult<()> {
     let mut writer = csv::WriterBuilder::new().delimiter(delim).from_writer(out);
 
@@ -47,9 +39,7 @@ fn write_xsv<W: io::Write>(
         .context("failed to write xSV column headers")?;
 
     for (i, chunk) in map.data.chunks(map.size.x as usize).enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(Cancelled);
-        }
+        cancel.try_weak()?;
 
         writer
             .write_field(i.to_string())
@@ -57,10 +47,6 @@ fn write_xsv<W: io::Write>(
         writer
             .serialize(chunk)
             .context("failed to write xSV data")?;
-
-        if cancel.load(Ordering::Relaxed) {
-            return Err(Cancelled);
-        }
 
         writer.flush().context("failed to flush xSV data")?;
     }
@@ -71,7 +57,7 @@ fn write_xsv<W: io::Write>(
 fn generate_impl<C: for<'a> Cache<'a>>(
     cache: C,
     opts: impl Borrow<GenerateOpts>,
-    cancel: impl Borrow<AtomicBool>,
+    cancel: impl Borrow<CancelToken>,
 ) -> CancelResult<()> {
     let opts = opts.borrow();
     let cancel = cancel.borrow();
@@ -104,13 +90,13 @@ fn generate_impl<C: for<'a> Cache<'a>>(
 fn generate_async<C: for<'a> Cache<'a> + 'static>(
     cache: C,
     opts: impl Borrow<GenerateOpts> + Send + 'static,
-    cancel: impl Borrow<AtomicBool> + Send + 'static,
+    cancel: impl Borrow<CancelToken> + Send + 'static,
 ) -> impl Future<Output = CancelResult<()>> {
     tokio::task::spawn_blocking(|| generate_impl(cache, opts, cancel)).map(Result::unwrap)
 }
 
 fn run_cancelable<
-    F: FnOnce(Arc<AtomicBool>) -> FR + Send,
+    F: FnOnce(Arc<CancelToken>) -> FR + Send,
     FR: Future<Output = CancelResult<T>> + Send,
     T: Send,
 >(
@@ -121,12 +107,12 @@ fn run_cancelable<
         .build()
         .context("failed to setup Tokio runtime")?;
 
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(CancelToken::new());
 
     match r.block_on(async move {
         let dfr = defer(|| {
             trace!("Setting cancelled flag");
-            cancel.store(true, Ordering::SeqCst)
+            cancel.set()
         });
 
         let ret = select! {

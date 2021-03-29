@@ -1,11 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
-};
+use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
 use itertools::Itertools;
 use log::{trace, warn};
@@ -18,8 +11,9 @@ use super::{
 };
 use crate::{
     cache::prelude::*,
+    cancel::prelude::*,
     config::MapConfig,
-    error::cancel::prelude::*,
+    error::prelude::*,
     tile_renderer::{DefaultTileRenderer, Tile, TileRange, TileRenderFunction},
 };
 
@@ -105,7 +99,6 @@ impl<'a, E: CacheEntry + Send> TileRenderFunction for RenderFunction<'a, E> {
             }
         }
 
-        // TODO: run this asynchronously
         match self
             .cache_entry
             .lock()
@@ -123,7 +116,7 @@ impl<'a, E: CacheEntry + Send> TileRenderFunction for RenderFunction<'a, E> {
 pub(super) fn compute<C: for<'a> Cache<'a>>(
     cache: C,
     cfg: Config,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
 ) -> CancelResult<DissonMap> {
     let mut cache_entry = cache
         .entry(CacheKey(cfg))
@@ -177,13 +170,11 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
                 c.y = base_hz * 2.0_f64.powf(c.y);
                 c
             })
-            .take_while(|_| !cancel.load(Ordering::Relaxed))
+            .take_while(|_| cancel.try_weak().is_ok())
             .collect()
     };
 
-    if cancel.load(Ordering::Relaxed) {
-        return Err(Cancelled);
-    }
+    cancel.try_weak()?;
 
     trace!("Rendering map...");
 
@@ -208,9 +199,7 @@ pub(super) fn compute<C: for<'a> Cache<'a>>(
     })
     .run(size, pitches, &blk_preload, cancel)?;
 
-    if cancel.load(Ordering::SeqCst) {
-        return Err(Cancelled);
-    }
+    cancel.try_strong()?;
 
     let mut cache_entry = cache_mutex.into_inner().unwrap();
 

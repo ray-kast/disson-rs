@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::collections::HashMap;
 
 use backbuf::BackBuffer;
 use log::trace;
@@ -9,7 +6,7 @@ use nalgebra::Vector2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::error::cancel::prelude::*;
+use crate::cancel::prelude::*;
 
 mod backbuf {
     use std::{mem, ptr, ptr::NonNull, slice, sync::RwLock};
@@ -147,7 +144,7 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
     pub fn run<
         I: AsRef<[F::Input]> + Sync,
         P: AsRef<[F::Output]> + Sync,
-        C: std::borrow::Borrow<AtomicBool> + Sync,
+        C: std::borrow::Borrow<CancelToken> + Sync,
     >(
         &self,
         size: Vector2<u32>,
@@ -221,19 +218,11 @@ impl<F: TileRenderFunction, const TW: u32, const TH: u32> TileRenderer<F, TW, TH
                     }
                 }
 
-                if cancel.borrow().load(Ordering::Relaxed) {
-                    None
-                } else {
-                    Some(())
-                }
+                cancel.borrow().try_weak().ok()
             })
             .while_some()
             .for_each(|()| ());
 
-        if cancel.borrow().load(Ordering::SeqCst) {
-            Err(Cancelled)
-        } else {
-            Ok(bbuf.into_inner())
-        }
+        cancel.borrow().try_strong().map(|()| bbuf.into_inner())
     }
 }

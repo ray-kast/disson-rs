@@ -6,6 +6,7 @@ use cli::{GlobalOpts, Opts, Subcommand};
 use log::{error, LevelFilter};
 
 mod cache;
+mod cancel;
 mod cli;
 mod config;
 mod disson;
